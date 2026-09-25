@@ -8,8 +8,10 @@ neurons, 25.6 M synapses), simulated as a spiking network by [flybrain](https://
 The descending neurons (DNs), the brain's commands to the body, are read out every 20 ms and move
 a cartoon fly.
 
-**Phase 1 (this):** brain → beat. Any audio → onsets → antennae → connectome → DNs → 2D fly.
-**Phase 2:** song recognition + choreography extracted from the music video, performed with the brain's timing.
+**Phase 1:** brain → beat. Any audio → onsets → antennae → connectome → DNs → 2D fly.
+**Phase 2 (in progress):** choreography from dance practice videos, performed with the brain's timing.
+Done: extraction (step 1), retargeting onto the fly (step 2), and blending the brain into the
+moves (step 3). Next: YouTube URLs as input, then live song recognition.
 
 ## Setup
 
@@ -35,6 +37,63 @@ uv run kpop-fly analyze song.mp3     # no window or sound: run it through the br
 uv run kpop-fly calibrate            # show which DNs hear sound, with latency and effect size
 uv run kpop-fly devices              # list audio devices, for `mic --device N`
 ```
+
+### Choreography
+
+```sh
+uv run kpop-fly songs                    # the songs in songs.toml and whether they're extracted
+uv run kpop-fly extract fancy --preview  # ~5 min per song on an M4; needs ffmpeg
+uv run kpop-fly extract --all
+```
+
+```sh
+uv run kpop-fly dance fancy              # the fly dances FANCY, with the song (choreo/fancy.opus)
+uv run kpop-fly dance tt --start 60      # jump to 1:00
+uv run kpop-fly render fancy             # write choreo/fancy-fly.mp4 offline (~4x real time)
+uv run kpop-fly file choreo/tt.opus --choreo tt   # the same as `dance tt`, spelled out
+```
+
+`dance` finds the song's audio through the file name recorded in the choreography, so the two
+always match. The fly's arms, legs, torso and head copy the consensus dancer (shown small in the
+corner): upper-arm/forearm and thigh/shin directions carry over as-is, so elbows and knees bend
+exactly as the dancer's do; torso tilt leans the upper body; the nose and ear line nod, shift and
+roll the head. Everything stays in screen space, so the fly does what you'd see in the video.
+Mid legs, wings and antennae have no human counterpart and are driven by the brain.
+
+### Dance + brain
+
+Three modes; press **m** in the window to cycle them, or pass `--mode`:
+
+| mode | the moves | when they land, how hard |
+|---|---|---|
+| `blend` (default) | the dance | the brain: snaps into poses on DN bursts and follows loosely between them; fast responders exaggerate arm moves (70% quiet → 130% on a burst), slow responders scale leg moves and bounce the knees a beat later; all responders add a nod and flare the wings |
+| `dance` | the dance | nothing: the brain runs (and shows in the panel) but drives nothing |
+| `brain` | Phase 1's generic beat dance | the brain |
+
+On pop songs the descending neurons never fall quiet (their level sits around 0.25–0.65,
+against 0.1–0.8 for a metronome), so blended mode rescales each channel to its own range over
+the last 4 s before using it.
+
+```sh
+uv run kpop-fly render fancy --compare   # choreo/fancy-compare.mp4: dance only | dance + brain
+uv run kpop-fly compare fancy            # measure it
+```
+
+`compare` runs all three modes on one brain simulation. Across the three songs, blended mode moves
+the limbs 70–95% more than the dance alone and lands harder on the song's strongest hits: limb
+speed just after the top 10% of onsets is 1.08–1.22× its speed elsewhere, against 0.96–1.07× for
+the dance alone. It stays about 16 px (mean, per joint) from the dance, so the choreography is
+still recognizable, and it's somewhat jerkier (0.83 vs 0.73 acceleration per unit speed on FANCY).
+
+`extract` downloads the dance practice video, finds every dancer in each frame (YOLOX-tiny +
+RTMPose-m via rtmlib, pose model on CoreML), normalizes each dancer to their own body, and takes
+the per-keypoint median across them: one consensus dancer, with mirror reflections and
+off-count dancers outvoted. It writes `choreo/<slug>.npz` (consensus + every raw dancer + the
+audio's onset envelope for syncing) and `choreo/<slug>.opus` (the song), then deletes the video.
+`--preview` also writes `choreo/<slug>.preview.mp4`: the footage with detected skeletons next to
+the consensus dancer, to check the result. `choreo/` is git-ignored because it's derived from
+third-party videos. MediaPipe was the original plan, but it finds only 0–2 of 9 small dancers per
+frame, and 1.0.x aborts on macOS ([#6356](https://github.com/google-ai-edge/mediapipe/issues/6356)).
 
 Useful flags: `--hearing sound` drives only the sound-tuned JO-A/B neurons instead of all 672
 (far fewer DNs respond); `--gain` scales the antennal drive; `--mute` dances without playing
@@ -83,12 +142,17 @@ the fly also dances to). Live with the window open, a step takes about 4 ms of e
 ```
 src/kpop_fly/
   beat.py     onset detection and tempo
+  choreo.py   dance practice video → consensus choreography (choreo/<slug>.npz)
+  retarget.py consensus dancer → fly pose targets
+  blend.py    dance-only / brain-only / blended modes
+  render.py   offline mp4s of the fly dancing a song, and the mode comparison
   brain.py    connectome, calibration, per-step readout into body channels
   engine.py   Pipeline (audio → brain, clock-free), BrainThread (real time), analyze (offline)
   audio.py    mic / file / metronome sources
   fly.py      springs and 2D geometry (pure math, tested)
   viz.py      pygame window
   cli.py      commands
+songs.toml    songs and their dance practice videos
 tests/        uv run pytest  (test_brain.py loads the real connectome; -m "not slow" skips it)
 ```
 

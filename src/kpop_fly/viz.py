@@ -2,17 +2,25 @@
 
 The right panel shows the chain end to end: sound onsets -> voltage into the antennae -> a
 raster of the descending neurons that listen -> the channel levels that move the body.
+
+With a choreography, the fly's arms, legs, torso and head follow the song's consensus dancer
+(drawn small in the corner for reference), mixed with the brain according to the mode (see
+blend.py). Press m to cycle blend -> dance -> brain.
 """
 from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Callable
 
 import numpy as np
 
 from .brain import CHANNELS
 from .engine import Pipeline
+from .blend import MODES, Blender
+from .choreo import BONES, KP
 from .fly import Dancer, skeleton
+from .retarget import ChoreoTrack
 
 W, H = 1200, 680
 STAGE_W = 620
@@ -28,7 +36,9 @@ BODY, BODY_DARK, EYE, WING = (120, 88, 60), (70, 50, 36), (200, 40, 50), (200, 2
 
 
 class Display:
-    def __init__(self, pipeline: Pipeline, source_name: str, headless: bool = False):
+    def __init__(self, pipeline: Pipeline, source_name: str, headless: bool = False,
+                 choreo: ChoreoTrack | None = None, song_time: Callable[[], float] | None = None,
+                 mode: str = "blend"):
         if headless:
             os.environ["SDL_VIDEODRIVER"] = "dummy"
         import pygame
@@ -41,23 +51,36 @@ class Display:
         self.pipeline = pipeline
         self.source_name = source_name
         self.dancer = Dancer()
+        self.blender = Blender()
         self.clock = pygame.time.Clock()
+        self.choreo = choreo
+        self.mode = mode if choreo else "brain"
+        self.headless = headless
+        self.song_time = song_time
+        self.t = 0.0
         cal = pipeline.brain.cal
         order = np.lexsort((cal.latency, cal.tier))
         self.row_order = order
         self.row_colors = np.array([TIER_COLORS[t] for t in cal.tier[order]], np.uint8)
 
-    def frame(self) -> bool:
-        """Draw one frame. Returns False when the user closes the window."""
+    def frame(self, dt: float | None = None, t: float | None = None) -> bool:
+        """Draw one frame, `dt` after the last, at song time `t` (live: measured). Returns False
+        when the user closes the window."""
         pg = self.pg
         for event in pg.event.get():
             if event.type == pg.QUIT or (event.type == pg.KEYDOWN and event.key in (pg.K_ESCAPE, pg.K_q)):
                 return False
-        dt = self.clock.tick(60) / 1000
+            if event.type == pg.KEYDOWN and event.key == pg.K_m and self.choreo:
+                self.mode = MODES[(MODES.index(self.mode) + 1) % len(MODES)]
+        if dt is None:
+            dt = self.clock.tick(60) / 1000
+        self.t = t if t is not None else self.song_time() if self.song_time else self.t + dt
         snap = self.pipeline.timeline.snapshot()
         latest = snap["latest"]
         levels = dict(zip(CHANNELS, latest.levels)) if latest else dict.fromkeys(CHANNELS, 0.0)
-        pose = self.dancer.update(levels, latest.drive if latest else 0.0, dt)
+        choreo = self.choreo.targets_at(self.t) if self.choreo else None
+        goals, stiffness = self.blender(self.mode, levels, latest.drive if latest else 0.0, choreo, dt)
+        pose = self.dancer.follow(goals, dt, stiffness)
 
         self.screen.fill(BG)
         self._stage(pose, snap)
@@ -88,9 +111,8 @@ class Display:
             pg.draw.polygon(wings, WING, w)
             pg.draw.polygon(wings, (220, 235, 255, 160), w, 2)
         s.blit(wings, (0, 0))
-        for leg in sk.legs:
-            pg.draw.lines(s, BODY_DARK, False, leg, 7)
-            pg.draw.lines(s, BODY, False, leg, 4)
+        for leg in sk.legs[2:]:                                     # mid and hind legs behind the body
+            self._leg(leg)
         pg.draw.polygon(s, (190, 150, 70), sk.abdomen)
         for stripe in sk.stripes:
             pg.draw.line(s, BODY_DARK, *stripe, 7)
@@ -104,12 +126,42 @@ class Display:
         for ant in sk.antennae:
             pg.draw.lines(s, BODY_DARK, False, ant, 4)
             pg.draw.circle(s, GOLD, ant[-1], 3)
+        for leg in sk.legs[:2]:                                     # front legs (arms) in front, like a dancer's
+            self._leg(leg, width=5)
 
         s.blit(self.big.render("kpop-fly", True, INK), (24, 18))
-        s.blit(self.font.render("phase 1: brain -> beat", True, DIM), (26, 46))
+        subtitle = f"dancing {self.choreo.title}" if self.choreo else "brain -> beat"
+        s.blit(self.font.render(subtitle, True, DIM), (26, 46))
+        if self.choreo:
+            names = {"blend": "dance + brain", "dance": "dance only", "brain": "brain only"}
+            tag = self.big.render(names[self.mode], True, PINK if self.mode == "blend" else CYAN if self.mode == "dance" else GOLD)
+            s.blit(tag, (24, 70))
+            if not self.headless:
+                s.blit(self.font.render("press m to switch", True, DIM), (26, 98))
         bpm = self.pipeline.detector.bpm()
-        s.blit(self.font.render(f"{self.source_name}   {f'heard {bpm:.0f} BPM' if bpm else 'listening...'}", True, INK),
-               (26, H - 40))
+        clock = f"{int(self.t // 60)}:{self.t % 60:04.1f}   " if self.choreo else ""
+        s.blit(self.font.render(f"{self.source_name}   {clock}{f'heard {bpm:.0f} BPM' if bpm else 'listening...'}",
+                                True, INK), (26, H - 40))
+        if self.choreo:
+            self._reference(self.choreo.human_at(self.t), self.choreo.dancers_at(self.t))
+
+    def _leg(self, points, width: int = 4) -> None:
+        self.pg.draw.lines(self.screen, BODY_DARK, False, points, width + 3)
+        self.pg.draw.lines(self.screen, BODY, False, points, width)
+        for joint in points[1:-1]:
+            self.pg.draw.circle(self.screen, BODY_DARK, joint, width // 2 + 2)
+
+    def _reference(self, human: np.ndarray, n_dancers: int) -> None:
+        """The consensus dancer the fly is copying, small, top right of the stage."""
+        pg, s = self.pg, self.screen
+        cx, cy, k = STAGE_W - 80, 150, 34
+        pt = lambda i: (cx + human[i, 0] * k, cy - human[i, 1] * k)
+        for a, b in BONES:
+            color = PINK if a.startswith("left") and b.startswith("left") else CYAN if a.startswith("right") and b.startswith("right") else DIM
+            pg.draw.line(s, color, pt(KP[a]), pt(KP[b]), 2)
+        pg.draw.circle(s, DIM, pt(KP["nose"]), 7, 2)
+        label = self.font.render(f"the moves ({n_dancers} dancers)", True, DIM)
+        s.blit(label, (min(cx - label.get_width() // 2, STAGE_W - label.get_width() - 8), cy + 72))
 
     def _panel(self, snap, levels) -> None:
         pg, s = self.pg, self.screen
@@ -140,8 +192,12 @@ class Display:
         pg.draw.rect(s, DIM, (x, y, w, rh), 1)
         y += rh + 14
 
-        labels = {"all": "all", "front": "fast -> arms", "mid": "mid -> mid legs", "hind": "slow -> knees",
-                  "left": "left brain", "right": "right brain"}
+        labels = {
+            "blend": {"all": "all -> snap, nod", "front": "fast -> arm hits", "mid": "mid -> mid legs",
+                      "hind": "slow -> knees"},
+            "dance": {"all": "all (unused)", "front": "fast (unused)", "mid": "mid (unused)", "hind": "slow (unused)"},
+            "brain": {"all": "all", "front": "fast -> arms", "mid": "mid -> mid legs", "hind": "slow -> knees"},
+        }[self.mode] | {"left": "left brain", "right": "right brain"}
         colors = {"all": INK, "front": TIER_COLORS[0], "mid": TIER_COLORS[1], "hind": TIER_COLORS[2],
                   "left": GOLD, "right": GOLD}
         for i, ch in enumerate(CHANNELS):
@@ -151,9 +207,14 @@ class Display:
             pg.draw.rect(s, BG, (cx + 130, cy + 2, bw, 12))
             pg.draw.rect(s, colors[ch], (cx + 130, cy + 2, int(bw * levels[ch]), 12))
         y += 3 * 24 + 8
-        foot = ("when each part moves: the brain's descending neurons.",
-                "how far it moves: an artistic mapping.",
-                "wiring: MaleCNS v1.0 (Berg et al. 2026, CC BY 4.0) via flybrain")
+        foot = {
+            "blend": ("the moves: the dance practice's consensus dancer.",
+                      "when they land, how hard: the brain's descending neurons."),
+            "dance": ("the moves: the dance practice's consensus dancer, alone.",
+                      "the brain is running but not driving the fly."),
+            "brain": ("when each part moves: the brain's descending neurons.",
+                      "how far it moves: an artistic mapping."),
+        }[self.mode] + ("wiring: MaleCNS v1.0 (Berg et al. 2026, CC BY 4.0) via flybrain",)
         for line in foot:
             s.blit(self.font.render(line, True, DIM), (x, y))
             y += 16

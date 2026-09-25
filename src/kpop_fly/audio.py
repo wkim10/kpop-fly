@@ -47,6 +47,15 @@ class PlaybackSource:
         self._pos = 0
         self._stream = None
         self._thread: threading.Thread | None = None
+        self._clock: tuple[int, float] | None = None    # (first sample of the last block sent, when)
+        self._latency = 0.0
+
+    def position(self) -> float:
+        """Seconds into the audio that are audible right now (accounts for output latency)."""
+        if self._clock is None:
+            return self._pos / self.sr
+        sent, at = self._clock
+        return max(0.0, sent / self.sr + (time.perf_counter() - at) - self._latency)
 
     @classmethod
     def file(cls, path: str | Path) -> PlaybackSource:
@@ -56,6 +65,9 @@ class PlaybackSource:
     @classmethod
     def metronome(cls, bpm: float, sr: int = 44100) -> PlaybackSource:
         return cls(click_track(bpm, sr), sr, f"metronome {bpm:g} BPM", loop=True)
+
+    def seek(self, seconds: float) -> None:
+        self._pos = max(0, int(seconds * self.sr))
 
     def _next(self, frames: int) -> np.ndarray:
         if self.loop:
@@ -74,6 +86,7 @@ class PlaybackSource:
         import sounddevice as sd
 
         def callback(outdata, frames, _time, _status):
+            self._clock = (self._pos, time.perf_counter())
             chunk = self._next(frames)
             outdata[:len(chunk)] = chunk
             outdata[len(chunk):] = 0
@@ -84,16 +97,18 @@ class PlaybackSource:
 
         self._stream = sd.OutputStream(samplerate=self.sr, channels=self.samples.shape[1], blocksize=BLOCK,
                                        dtype="float32", callback=callback, finished_callback=self.finished.set)
+        self._latency = float(self._stream.latency)
         self._stream.start()
 
     def _paced(self, on_block: OnBlock) -> None:
-        start = time.perf_counter()
+        start, first = time.perf_counter(), self._pos
         while not self.finished.is_set():
+            self._clock = (self._pos, time.perf_counter())
             chunk = self._next(BLOCK)
             if not len(chunk):
                 break
             on_block(chunk.mean(axis=1))
-            delay = start + self._pos / self.sr - time.perf_counter()
+            delay = start + (self._pos - first) / self.sr - time.perf_counter()
             if delay > 0:
                 time.sleep(delay)
         self.finished.set()

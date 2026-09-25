@@ -7,9 +7,12 @@ requires-python = ">=3.13"
 dependencies = [
     "flybrain==0.1.0",
     "numpy>=2.0",
+    "onnxruntime>=1.30.0",
     "pygame-ce>=2.5",
+    "rtmlib>=0.0.16",
     "sounddevice>=0.5",
     "soundfile>=0.13",
+    "yt-dlp>=2026.8.19",
 ]
 
 [project.scripts]

@@ -1,0 +1,20 @@
+# Songs kpop-fly can dance. `kpop-fly extract <slug>` turns each video into choreo/<slug>.npz.
+# Videos should be fixed-camera, full-body dance practice takes: the extractor builds one
+# consensus dancer from everyone in frame, so unison group choreography works best.
+
+[fancy]
+artist = "TWICE"
+title = "FANCY"
+youtube = "iRw4kL1CMI8"          # TWICE "FANCY" Dance Practice Video (official TWICE channel, 2019)
+
+[tt]
+artist = "TWICE"
+title = "TT"
+youtube = "9uypQGzzhns"          # TWICE(트와이스) "TT" Dance Practice Video (official TWICE channel, 2016)
+
+[cheer-up]
+artist = "TWICE"
+title = "CHEER UP"
+youtube = "7T4wxA2BGTo"          # TWICE(트와이스) "CHEER UP" Dance Video (official TWICE channel, 2016).
+                                 # No official upload is titled "dance practice"; this one is a
+                                 # fixed-camera practice-room take with no cuts, which is what we need.
