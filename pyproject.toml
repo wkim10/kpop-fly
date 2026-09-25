@@ -1,0 +1,27 @@
+[project]
+name = "kpop-fly"
+version = "0.1.0"
+description = "A fruit fly that dances to K-pop, driven by a simulation of its real connectome (MaleCNS v1.0)."
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "flybrain==0.1.0",
+    "numpy>=2.0",
+    "pygame-ce>=2.5",
+    "sounddevice>=0.5",
+    "soundfile>=0.13",
+]
+
+[project.scripts]
+kpop-fly = "kpop_fly.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[build-system]
+requires = ["uv_build>=0.11,<0.12"]
+build-backend = "uv_build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["slow: loads the full connectome (~10 s)"]
