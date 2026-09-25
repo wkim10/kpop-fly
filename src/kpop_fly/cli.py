@@ -3,6 +3,7 @@
   kpop-fly mic                   dance to the microphone
   kpop-fly file song.mp3         play a file and dance to it
   kpop-fly dance fancy           dance an extracted song's choreography, with its audio
+  kpop-fly url <youtube link>    play a YouTube video (MV, live stage...) and dance the matching song
   kpop-fly render fancy          render that to an mp4 (offline)
   kpop-fly compare fancy         measure dance-only vs brain-only vs blended
   kpop-fly metronome --bpm 120   dance to a click track
@@ -74,9 +75,13 @@ def cmd_live(args) -> None:
     from .audio import MicSource, PlaybackSource
     from .engine import BrainThread, Pipeline
 
-    track = None
+    track, song_time, name = None, None, None
     if args.cmd == "mic":
         source = MicSource(args.device)
+    elif args.cmd == "url":
+        audio, info, match, track = _url_match(args)
+        source, name = PlaybackSource.file(audio), info["title"]
+        song_time = (lambda: match.song_time(source.position())) if match else None
     elif args.cmd == "dance":
         from .retarget import ChoreoTrack
         track = ChoreoTrack.load(args.song)
@@ -90,14 +95,16 @@ def cmd_live(args) -> None:
         source = PlaybackSource.metronome(args.bpm)
     if getattr(args, "start", None):
         source.seek(args.start)
+    if track and song_time is None:
+        song_time = source.position
 
     pipe = Pipeline(_brain(args), source.sr)
     brain_thread = BrainThread(pipe)
     display = None
     if not args.no_window:
         from .viz import Display
-        display = Display(pipe, track.title if track else source.name, headless=args.headless,
-                          choreo=track, song_time=source.position if track else None, mode=args.mode)
+        display = Display(pipe, name or (track.title if track else source.name), headless=args.headless,
+                          choreo=track, song_time=song_time, mode=args.mode)
     source.start(pipe.feed, mute=args.mute)
     brain_thread.start()
     print(f"listening to {source.name}. {'Close the window or press q to quit.' if display else 'Ctrl-C to quit.'}")
@@ -135,6 +142,31 @@ def cmd_live(args) -> None:
             print(f"warning: the brain fell behind real time {brain_thread.late_steps} times")
 
 
+def _url_match(args):
+    """Fetch a YouTube link's audio and find which saved dance it is, and where."""
+    from .audio import load_audio
+    from .choreo import CHOREO_DIR, Choreo, onset_envelope
+    from .match import by_video_id, match
+    from .retarget import ChoreoTrack
+    from .youtube import fetch_audio
+
+    audio, info = fetch_audio(args.link)
+    choreos = {p.stem: Choreo.load(p) for p in sorted(CHOREO_DIR.glob("*.npz"))}
+    samples, sr = load_audio(audio)
+    found = by_video_id(info["id"], choreos, len(samples) / sr)
+    if not found and choreos:
+        found, candidates = match(onset_envelope(samples.mean(axis=1), sr), choreos)
+        if args.verbose or not found:
+            for c in candidates:
+                print(f"  {c.slug:<10} longest stretch {c.longest:4.0f} s, {c.cover:4.0%} of the video, score {c.score:.2f}")
+    if not found:
+        print(f"no saved dance matches {info['title']!r}; the fly will dance to the brain alone.")
+        return audio, info, None, None
+    track = ChoreoTrack.load(found.slug)
+    print(f"matched {track.title} (by {found.how}): {found.describe()}")
+    return audio, info, found, track
+
+
 def cmd_render(args) -> None:
     from .render import render
     from .retarget import ChoreoTrack
@@ -148,6 +180,16 @@ def cmd_render(args) -> None:
     suffix = "" if args.mode == "blend" else f"-{args.mode}"
     out = args.out or track.path.with_name(f"{track.path.stem}-fly{suffix}.mp4")
     render(track, _brain(args), out, start=args.start or 0.0, seconds=args.seconds, fps=args.fps, mode=args.mode)
+
+
+def cmd_url_render(args) -> None:
+    from .choreo import CHOREO_DIR
+    from .render import render
+
+    audio, info, found, track = _url_match(args)
+    out = args.out or CHOREO_DIR / f"url-{info['id']}-fly.mp4"
+    render(track, _brain(args), out, start=args.start or 0.0, seconds=args.seconds, mode=args.mode,
+           audio=audio, time_map=found.song_time if found else None, title=info["title"])
 
 
 def cmd_compare(args) -> None:
@@ -240,6 +282,13 @@ def main(argv: list[str] | None = None) -> None:
     sp.add_argument("--start", type=float, help="start this many seconds into the song")
     sp.add_argument("--mute", action="store_true", help="don't play the sound, just dance in time")
     live_opts(sp)
+    sp = sub.add_parser("url", help="play a YouTube video's audio and dance to whichever saved dance it is")
+    sp.add_argument("link", help="a YouTube URL (music video, live stage, ...) or an 11-character video id")
+    sp.add_argument("--start", type=float, help="start this many seconds into the video")
+    sp.add_argument("--mute", action="store_true", help="don't play the sound, just dance in time")
+    sp.add_argument("--render", nargs="?", const="", metavar="OUT",
+                    help="write an mp4 instead of opening a window (default: choreo/url-<id>-fly.mp4)")
+    live_opts(sp)
     sp = sub.add_parser("file", help="play an audio file and dance to it")
     sp.add_argument("path")
     sp.add_argument("--choreo", help="also dance this choreography (slug or .npz); the file must be its song")
@@ -298,6 +347,8 @@ def main(argv: list[str] | None = None) -> None:
     sp.set_defaults(func=cmd_devices)
 
     args = p.parse_args(argv)
+    if args.cmd == "url" and args.render is not None:
+        args.out, args.func = args.render or None, cmd_url_render
     if args.cmd == "extract" and not (args.song or args.all):
         p.error("extract needs a song slug, a YouTube URL, or --all")
     if args.cmd == "analyze" and not args.path and not args.seconds:

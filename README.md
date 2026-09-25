@@ -10,8 +10,8 @@ a cartoon fly.
 
 **Phase 1:** brain → beat. Any audio → onsets → antennae → connectome → DNs → 2D fly.
 **Phase 2 (in progress):** choreography from dance practice videos, performed with the brain's timing.
-Done: extraction (step 1), retargeting onto the fly (step 2), and blending the brain into the
-moves (step 3). Next: YouTube URLs as input, then live song recognition.
+Done: extraction (step 1), retargeting onto the fly (step 2), blending the brain into the moves
+(step 3), and YouTube links as input (step 4). Next: live song recognition from the microphone.
 
 ## Setup
 
@@ -59,6 +59,28 @@ corner): upper-arm/forearm and thigh/shin directions carry over as-is, so elbows
 exactly as the dancer's do; torso tilt leans the upper body; the nose and ear line nod, shift and
 roll the head. Everything stays in screen space, so the fly does what you'd see in the video.
 Mid legs, wings and antennae have no human counterpart and are driven by the brain.
+
+### Any YouTube link
+
+```sh
+uv run kpop-fly url "https://www.youtube.com/watch?v=ePpPVE-GGJw"   # TWICE "TT" M/V
+uv run kpop-fly url ePpPVE-GGJw --render                          # or write choreo/url-<id>-fly.mp4
+```
+
+`url` downloads the video's audio (cached in `~/.cache/kpop-fly/youtube/`), works out which saved
+dance it is and where each moment falls in the song, then plays it with the fly dancing. The link
+can be the dance practice video itself (recognized by its video id) or a different recording of
+the song: a music video with a drama intro, a TV stage with live vocals. Moments that aren't the
+song, such as an MV's intro, and links that match no saved dance, get the brain-only dance.
+
+Matching uses the onset envelope each choreo file saved for its song: 10 s windows of the
+recording are cross-correlated against it, and a Viterbi pass picks one consistent offset per
+stretch. Choruses repeat, so each chorus window matches every chorus about equally well; a jump
+penalty keeps the path on the true offset instead of hopping between repeats. Tested on the
+three MVs and three TV stages of the saved songs (all matched as one clean segment; the MVs'
+intros correctly left out) and on TWICE "What is Love?", "LIKEY" and BTS "Dynamite" (no match).
+The weakest real match is the CHEER UP MV (61% of it; its mix differs most from the practice
+video).
 
 ### Dance + brain
 
@@ -146,6 +168,8 @@ src/kpop_fly/
   retarget.py consensus dancer → fly pose targets
   blend.py    dance-only / brain-only / blended modes
   render.py   offline mp4s of the fly dancing a song, and the mode comparison
+  youtube.py  audio from a YouTube link (cached)
+  match.py    which saved dance a recording is, and its time map onto the song
   brain.py    connectome, calibration, per-step readout into body channels
   engine.py   Pipeline (audio → brain, clock-free), BrainThread (real time), analyze (offline)
   audio.py    mic / file / metronome sources

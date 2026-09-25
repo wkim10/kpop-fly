@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import time
 from pathlib import Path
+from typing import Callable
 
 import numpy as np
 
@@ -19,26 +20,33 @@ from .engine import Pipeline
 from .retarget import ChoreoTrack
 
 
-def render(track: ChoreoTrack, brain: ListeningBrain, out: str | Path, start: float = 0.0,
-           seconds: float | None = None, fps: float = 30.0, warmup: float = 2.0, mode: str = "blend") -> Path:
+def render(track: ChoreoTrack | None, brain: ListeningBrain, out: str | Path, start: float = 0.0,
+           seconds: float | None = None, fps: float = 30.0, warmup: float = 2.0, mode: str = "blend",
+           audio: Path | None = None, time_map: Callable[[float], float | None] | None = None,
+           title: str | None = None) -> Path:
+    """Render `audio` (default: the track's own song). `time_map` turns audio time into song time
+    (None where the audio isn't the song); without one, the two are the same."""
     from .viz import H, W, Display
 
     ffmpeg = shutil.which("ffmpeg")
     if not ffmpeg:
         raise SystemExit("ffmpeg not found; install it (e.g. `brew install ffmpeg`)")
-    samples, sr = load_audio(track.audio)
+    audio = audio or track.audio
+    samples, sr = load_audio(audio)
     mono = samples.mean(axis=1)
     end = min(len(mono) / sr, start + seconds if seconds else np.inf)
     out = Path(out)
 
+    now = start
     pipe = Pipeline(brain, sr)
-    display = Display(pipe, track.title, headless=True, choreo=track, mode=mode)
+    display = Display(pipe, title or (track.title if track else Path(audio).stem), headless=True, choreo=track,
+                      mode=mode, song_time=lambda: time_map(now) if time_map else now)
     hop = int(round(brain.dt * sr))
     cursor = max(0, int((start - warmup) * sr))       # let the brain hear a little before the first frame
 
     proc = subprocess.Popen(
         [ffmpeg, "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{W}x{H}", "-r", f"{fps}",
-         "-i", "-", "-ss", f"{start}", "-t", f"{end - start}", "-i", str(track.audio),
+         "-i", "-", "-ss", f"{start}", "-t", f"{end - start}", "-i", str(audio),
          "-c:v", "libx264", "-preset", "veryfast", "-crf", "30", "-pix_fmt", "yuv420p",
          "-c:a", "aac", "-b:a", "160k", "-shortest", str(out)],
         stdin=subprocess.PIPE)
@@ -46,16 +54,16 @@ def render(track: ChoreoTrack, brain: ListeningBrain, out: str | Path, start: fl
     t0, last = time.perf_counter(), 0.0
     try:
         for i in range(frames):
-            t = start + i / fps
-            while cursor / sr < t:                     # brain catches up to this frame's audio
+            now = start + i / fps
+            while cursor / sr <= now:                  # brain catches up to this frame's audio
                 pipe.feed(mono[cursor:cursor + hop])
                 pipe.step()
                 cursor += hop
-            display.frame(dt=1 / fps, t=t)
+            display.frame(dt=1 / fps)
             proc.stdin.write(display.pg.image.tobytes(display.screen, "RGB"))
             if time.perf_counter() - last > 10:
                 last = time.perf_counter()
-                print(f"  {t - start:.0f}/{end - start:.0f} s rendered")
+                print(f"  {now - start:.0f}/{end - start:.0f} s rendered")
     finally:
         proc.stdin.close()
         proc.wait()

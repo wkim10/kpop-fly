@@ -64,8 +64,8 @@ class Display:
         self.row_colors = np.array([TIER_COLORS[t] for t in cal.tier[order]], np.uint8)
 
     def frame(self, dt: float | None = None, t: float | None = None) -> bool:
-        """Draw one frame, `dt` after the last, at song time `t` (live: measured). Returns False
-        when the user closes the window."""
+        """Draw one frame, `dt` after the last, at song time `t` (default: ask `song_time`, which
+        may say None: this moment isn't part of the dance). Returns False when the window closes."""
         pg = self.pg
         for event in pg.event.get():
             if event.type == pg.QUIT or (event.type == pg.KEYDOWN and event.key in (pg.K_ESCAPE, pg.K_q)):
@@ -75,10 +75,11 @@ class Display:
         if dt is None:
             dt = self.clock.tick(60) / 1000
         self.t = t if t is not None else self.song_time() if self.song_time else self.t + dt
+        in_dance = self.choreo is not None and self.t is not None
         snap = self.pipeline.timeline.snapshot()
         latest = snap["latest"]
         levels = dict(zip(CHANNELS, latest.levels)) if latest else dict.fromkeys(CHANNELS, 0.0)
-        choreo = self.choreo.targets_at(self.t) if self.choreo else None
+        choreo = self.choreo.targets_at(self.t) if in_dance else None
         goals, stiffness = self.blender(self.mode, levels, latest.drive if latest else 0.0, choreo, dt)
         pose = self.dancer.follow(goals, dt, stiffness)
 
@@ -134,15 +135,21 @@ class Display:
         s.blit(self.font.render(subtitle, True, DIM), (26, 46))
         if self.choreo:
             names = {"blend": "dance + brain", "dance": "dance only", "brain": "brain only"}
-            tag = self.big.render(names[self.mode], True, PINK if self.mode == "blend" else CYAN if self.mode == "dance" else GOLD)
+            shown = self.mode if self.t is not None else "brain"      # outside the dance only the brain moves it
+            tag = self.big.render(names[shown], True, PINK if shown == "blend" else CYAN if shown == "dance" else GOLD)
             s.blit(tag, (24, 70))
             if not self.headless:
                 s.blit(self.font.render("press m to switch", True, DIM), (26, 98))
         bpm = self.pipeline.detector.bpm()
-        clock = f"{int(self.t // 60)}:{self.t % 60:04.1f}   " if self.choreo else ""
+        if not self.choreo:
+            clock = ""
+        elif self.t is None:
+            clock = "not in the dance: brain only   "
+        else:
+            clock = f"{int(self.t // 60)}:{self.t % 60:04.1f}   "
         s.blit(self.font.render(f"{self.source_name}   {clock}{f'heard {bpm:.0f} BPM' if bpm else 'listening...'}",
                                 True, INK), (26, H - 40))
-        if self.choreo:
+        if self.choreo and self.t is not None:
             self._reference(self.choreo.human_at(self.t), self.choreo.dancers_at(self.t))
 
     def _leg(self, points, width: int = 4) -> None:
