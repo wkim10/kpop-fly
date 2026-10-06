@@ -19,6 +19,7 @@ import argparse
 import platform
 import sys
 import time
+from pathlib import Path
 
 import numpy as np
 
@@ -75,9 +76,20 @@ def cmd_live(args) -> None:
     from .audio import MicSource, PlaybackSource
     from .engine import BrainThread, Pipeline
 
-    track, song_time, name = None, None, None
+    track, song_time, name, live = None, None, None, None
     if args.cmd == "mic":
-        source = MicSource(args.device)
+        from .choreo import CHOREO_DIR
+        from .listen import LiveDance, load_tracks
+        from .recognize import TOKEN_ENV, token
+        if args.simulate:                    # a file standing in for the mic: nothing knows where in it we are
+            source = PlaybackSource.file(args.simulate)
+            source.name = f"simulated mic: {Path(args.simulate).name}"
+        else:
+            source = MicSource(args.device)
+        if not token():
+            print(f"{TOKEN_ENV} isn't set: only the saved songs can be recognized (by matching them locally).")
+        live = LiveDance(source.sr, load_tracks(CHOREO_DIR), token(), max_requests=args.max_requests)
+        song_time, name = live.song_time, source.name
     elif args.cmd == "url":
         audio, info, match, track = _url_match(args)
         source, name = PlaybackSource.file(audio), info["title"]
@@ -105,7 +117,13 @@ def cmd_live(args) -> None:
         from .viz import Display
         display = Display(pipe, name or (track.title if track else source.name), headless=args.headless,
                           choreo=track, song_time=song_time, mode=args.mode)
-    source.start(pipe.feed, mute=args.mute)
+    if live:
+        def feed(block, live=live):
+            pipe.feed(block)
+            live.feed(block)
+        source.start(feed, mute=args.mute)
+    else:
+        source.start(pipe.feed, mute=args.mute)
     brain_thread.start()
     print(f"listening to {source.name}. {'Close the window or press q to quit.' if display else 'Ctrl-C to quit.'}")
 
@@ -116,6 +134,8 @@ def cmd_live(args) -> None:
             if args.seconds and now - start >= args.seconds:
                 break
             if display:
+                if live:
+                    display.choreo, display.status = live.track, live.status
                 if not display.frame():
                     break
             else:
@@ -125,9 +145,13 @@ def cmd_live(args) -> None:
                 snap = pipe.timeline.snapshot()
                 f = snap["latest"]
                 bpm = pipe.detector.bpm()
-                print(f"t={now - start:5.1f}s  beats {pipe.beats:4d}  {f'{bpm:5.1f} BPM' if bpm else '  -- BPM'}  "
-                      f"step {snap['step_ms']:.1f} ms  DNs firing {int(f.dn_fired.sum()) if f else 0:3d}  "
-                      f"level {f.level('all') if f else 0:.2f}")
+                line = (f"t={now - start:5.1f}s  beats {pipe.beats:4d}  {f'{bpm:5.1f} BPM' if bpm else '  -- BPM'}  "
+                        f"step {snap['step_ms']:.1f} ms  DNs firing {int(f.dn_fired.sum()) if f else 0:3d}  "
+                        f"level {f.level('all') if f else 0:.2f}")
+                if live:
+                    st = live.song_time()
+                    line += f"  | song {'--' if st is None else f'{st:6.2f}s'}  {live.state}"
+                print(line)
     except KeyboardInterrupt:
         pass
     finally:
@@ -274,8 +298,12 @@ def main(argv: list[str] | None = None) -> None:
         sp.add_argument("--verbose", "-v", action="store_true", help="print status lines alongside the window")
         sp.set_defaults(func=cmd_live, mute=False)
 
-    sp = sub.add_parser("mic", help="dance to the microphone")
+    sp = sub.add_parser("mic", help="dance to the microphone, recognizing songs with AudD")
     sp.add_argument("--device", help="input device index or name (see `kpop-fly devices`)")
+    sp.add_argument("--max-requests", type=int, default=50, help="most AudD requests this session (default 50)")
+    sp.add_argument("--simulate", metavar="FILE", help="feed this audio file in as if it were the mic (for testing)")
+    sp.add_argument("--start", type=float, help="with --simulate: start this many seconds into the file")
+    sp.add_argument("--mute", action="store_true", help="with --simulate: don't play the file aloud")
     live_opts(sp)
     sp = sub.add_parser("dance", help="dance an extracted song's choreography, with its audio")
     sp.add_argument("song", help="a slug in choreo/ (e.g. fancy) or a path to its .npz")

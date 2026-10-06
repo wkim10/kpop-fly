@@ -54,7 +54,8 @@ class Display:
         self.blender = Blender()
         self.clock = pygame.time.Clock()
         self.choreo = choreo
-        self.mode = mode if choreo else "brain"
+        self.mode = mode                           # requested; without a dance the brain drives anyway
+        self.status: str | None = None             # a line about what's being listened to (mic mode)
         self.headless = headless
         self.song_time = song_time
         self.t = 0.0
@@ -133,9 +134,14 @@ class Display:
         s.blit(self.big.render("kpop-fly", True, INK), (24, 18))
         subtitle = f"dancing {self.choreo.title}" if self.choreo else "brain -> beat"
         s.blit(self.font.render(subtitle, True, DIM), (26, 46))
+        if self.status:
+            text = self.status
+            while self.font.size(text)[0] > STAGE_W - 40 and len(text) > 4:
+                text = text[:-4] + "..."
+            s.blit(self.font.render(text, True, DIM), (26, H - 62))
         if self.choreo:
             names = {"blend": "dance + brain", "dance": "dance only", "brain": "brain only"}
-            shown = self.mode if self.t is not None else "brain"      # outside the dance only the brain moves it
+            shown = self._shown_mode()
             tag = self.big.render(names[shown], True, PINK if shown == "blend" else CYAN if shown == "dance" else GOLD)
             s.blit(tag, (24, 70))
             if not self.headless:
@@ -151,6 +157,10 @@ class Display:
                                 True, INK), (26, H - 40))
         if self.choreo and self.t is not None:
             self._reference(self.choreo.human_at(self.t), self.choreo.dancers_at(self.t))
+
+    def _shown_mode(self) -> str:
+        """The mode actually moving the fly: outside a dance only the brain does."""
+        return self.mode if self.choreo is not None and self.t is not None else "brain"
 
     def _leg(self, points, width: int = 4) -> None:
         self.pg.draw.lines(self.screen, BODY_DARK, False, points, width + 3)
@@ -204,7 +214,7 @@ class Display:
                       "hind": "slow -> knees"},
             "dance": {"all": "all (unused)", "front": "fast (unused)", "mid": "mid (unused)", "hind": "slow (unused)"},
             "brain": {"all": "all", "front": "fast -> arms", "mid": "mid -> mid legs", "hind": "slow -> knees"},
-        }[self.mode] | {"left": "left brain", "right": "right brain"}
+        }[self._shown_mode()] | {"left": "left brain", "right": "right brain"}
         colors = {"all": INK, "front": TIER_COLORS[0], "mid": TIER_COLORS[1], "hind": TIER_COLORS[2],
                   "left": GOLD, "right": GOLD}
         for i, ch in enumerate(CHANNELS):
@@ -221,7 +231,7 @@ class Display:
                       "the brain is running but not driving the fly."),
             "brain": ("when each part moves: the brain's descending neurons.",
                       "how far it moves: an artistic mapping."),
-        }[self.mode] + ("wiring: MaleCNS v1.0 (Berg et al. 2026, CC BY 4.0) via flybrain",)
+        }[self._shown_mode()] + ("wiring: MaleCNS v1.0 (Berg et al. 2026, CC BY 4.0) via flybrain",)
         for line in foot:
             s.blit(self.font.render(line, True, DIM), (x, y))
             y += 16

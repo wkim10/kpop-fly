@@ -11,7 +11,7 @@ a cartoon fly.
 **Phase 1:** brain → beat. Any audio → onsets → antennae → connectome → DNs → 2D fly.
 **Phase 2 (in progress):** choreography from dance practice videos, performed with the brain's timing.
 Done: extraction (step 1), retargeting onto the fly (step 2), blending the brain into the moves
-(step 3), and YouTube links as input (step 4). Next: live song recognition from the microphone.
+(step 3), YouTube links as input (step 4), and live song recognition from the microphone (step 5).
 
 ## Setup
 
@@ -30,7 +30,7 @@ The first run downloads the connectome (~260 MB, to `~/fly-data`, or `$FLY_DATA`
 ## Usage
 
 ```sh
-uv run kpop-fly mic                  # dance to the microphone (allow mic access for your terminal)
+uv run kpop-fly mic                  # listen, recognize the song, dance it (allow mic access for your terminal)
 uv run kpop-fly file song.mp3        # play a file (wav/flac/ogg/mp3) and dance to it
 uv run kpop-fly metronome --bpm 128
 uv run kpop-fly analyze song.mp3     # no window or sound: run it through the brain and report
@@ -59,6 +59,40 @@ corner): upper-arm/forearm and thigh/shin directions carry over as-is, so elbows
 exactly as the dancer's do; torso tilt leans the upper body; the nose and ear line nod, shift and
 roll the head. Everything stays in screen space, so the fly does what you'd see in the video.
 Mid legs, wings and antennae have no human counterpart and are driven by the brain.
+
+### Live from the microphone
+
+```sh
+export AUDD_API_TOKEN=...            # from dashboard.audd.io (300 free requests)
+uv run kpop-fly mic                  # play a song anywhere near the mic
+uv run kpop-fly mic --simulate choreo/tt.opus --start 60   # test without a mic: a file stands in for it
+```
+
+The fly dances to the brain alone while `mic` listens. Once it has heard 10 s of sound, it sends
+that clip to [AudD](https://audd.io) on a background thread. If AudD names one of the saved
+songs, the clip is located in it, near AudD's timecode, and the fly switches to the dance.
+Locating takes two stages: chroma (which notes are sounding) finds the bar, then the onset
+envelope finds the exact 20 ms frame. Rhythm alone, through a speaker and a room, fits one beat or
+one bar off about half the time; harmony doesn't.
+
+After that it stays in sync for free: every 6 s the latest audio is re-located around where the
+song should be by now. AudD is only asked again when that fails three times running (the song
+changed, or someone skipped). A song AudD names that has no saved dance shows as, for example,
+"TWICE - Likey (K-pop): no saved dance", and the brain keeps dancing. `--max-requests` caps AudD
+requests per session (default 50).
+
+When AudD doesn't recognize a recording, or there's no token or no network, every saved song is
+searched end to end instead. AudD fingerprints the studio recording, so it misses TV stages with
+live vocals; the local search still finds them. A local match must score well and beat the next
+saved song clearly (real matches by at least 0.20, other songs by at most 0.09). Without AudD's
+timecode nothing tells a song's repeated sections apart, so a local lock can land on another
+chorus. That happened in about 1 test clip in 10, usually where the choreography repeats too.
+
+Tested with files standing in for the mic: TT's music video (one AudD request, then in sync to
+about 0.1 s for the rest of the test), FANCY's TV stage (AudD didn't know it; recognized locally),
+a FANCY-to-TT switch (noticed about 14 s after the change), LIKEY (recognized, no saved dance),
+and runs without a token. With simulated laptop-speaker-to-room-to-mic audio, the two-stage
+locate placed 55 of 55 clips correctly. A real microphone hasn't been tested yet.
 
 ### Any YouTube link
 
@@ -170,6 +204,9 @@ src/kpop_fly/
   render.py   offline mp4s of the fly dancing a song, and the mode comparison
   youtube.py  audio from a YouTube link (cached)
   match.py    which saved dance a recording is, and its time map onto the song
+  features.py chroma: harmony over time, for locating room audio in a song
+  recognize.py  AudD client and title matching
+  listen.py   live listening: recognize, lock on, stay in sync
   brain.py    connectome, calibration, per-step readout into body channels
   engine.py   Pipeline (audio → brain, clock-free), BrainThread (real time), analyze (offline)
   audio.py    mic / file / metronome sources

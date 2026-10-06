@@ -161,17 +161,12 @@ def _need(tool: str) -> str:
 
 def download(youtube: str, workdir: Path, log: Callable[[str], None]) -> tuple[Path, Path, dict]:
     """Video-only (<=720p, H.264 so OpenCV decodes it) and audio-only streams; no merging needed."""
-    from yt_dlp import YoutubeDL
-    url = youtube if youtube.startswith("http") else f"https://www.youtube.com/watch?v={youtube}"
-    common = {"quiet": True, "no_warnings": True, "noprogress": True}
-    with YoutubeDL({**common, "format": "bv*[height<=720][vcodec^=avc1]/bv*[height<=720]",
-                    "outtmpl": str(workdir / "video.%(ext)s")}) as y:
-        log(f"downloading video {url}")
-        info = y.extract_info(url, download=True)
-        video = Path(y.prepare_filename(info))
-    with YoutubeDL({**common, "format": "ba[acodec=opus]/ba", "outtmpl": str(workdir / "audio.%(ext)s")}) as y:
-        log("downloading audio")
-        audio = Path(y.prepare_filename(y.extract_info(url, download=True)))
+    from .youtube import download as ydl_download, normalize
+    url = normalize(youtube)
+    log(f"downloading video {url}")
+    info, video = ydl_download(url, "bv*[height<=720][vcodec^=avc1]/bv*[height<=720]", str(workdir / "video.%(ext)s"))
+    log("downloading audio")
+    _, audio = ydl_download(url, "ba[acodec=opus]/ba", str(workdir / "audio.%(ext)s"))
     keep = ("id", "title", "channel", "upload_date", "duration", "webpage_url")
     return video, audio, {k: info.get(k) for k in keep}
 
