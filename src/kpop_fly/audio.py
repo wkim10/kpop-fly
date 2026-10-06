@@ -137,3 +137,47 @@ class MicSource:
         self.finished.set()
         if self._stream is not None:
             self._stream.close()
+
+
+class InputConditioner:
+    """Between a live input and everything that listens to it: a level meter and automatic gain.
+
+    Laptop mics often hear music from across a room at -50..-60 dBFS, below the onset detector's
+    gate (-55) and too quiet for anything downstream. So:
+      level_db   the raw input level (RMS over LEVEL_S), before any gain: the meter's reading
+      gain       raises the input toward TARGET_DB (at most MAX_GAIN_DB). It only adapts while
+                 the input is above silence_db, so silence can't wind it up
+      gate       below silence_db the output fades to zero, so amplified room noise doesn't
+                 become beats
+    """
+    TARGET_DB = -20.0
+    MAX_GAIN_DB = 40.0
+    LEVEL_S = 0.5             # meter and gate response
+    ADAPT_S = 3.0             # gain response: slow, so it follows the song's level, not its beats
+    GATE_RELEASE_S = 0.3
+
+    def __init__(self, sr: int, silence_db: float = -65.0):
+        self.sr = sr
+        self.silence_db = silence_db
+        self.level_db = -120.0
+        self.gain_db = 0.0
+        self._fast = 0.0                     # mean square over LEVEL_S
+        self._slow = 0.0                     # mean square over ADAPT_S, only while loud
+        self._gate = 0.0
+
+    @property
+    def loud(self) -> bool:
+        return self.level_db > self.silence_db
+
+    def __call__(self, block: np.ndarray) -> np.ndarray:
+        block = np.asarray(block, np.float32)
+        dur = len(block) / self.sr
+        energy = float(np.mean(block ** 2)) if len(block) else 0.0
+        self._fast += min(1.0, dur / self.LEVEL_S) * (energy - self._fast)
+        self.level_db = 10 * np.log10(self._fast + 1e-12)
+        if self.loud and 10 * np.log10(energy + 1e-12) > self.silence_db:   # not while the meter is still falling
+            self._slow = energy if self._slow == 0.0 else self._slow + min(1.0, dur / self.ADAPT_S) * (energy - self._slow)
+            self.gain_db = float(np.clip(self.TARGET_DB - 10 * np.log10(self._slow + 1e-12), 0.0, self.MAX_GAIN_DB))
+        target = 1.0 if self.loud else 0.0
+        self._gate += (target - self._gate) * (1.0 if target > self._gate else min(1.0, dur / self.GATE_RELEASE_S))
+        return np.clip(block * (10 ** (self.gain_db / 20) * self._gate), -1.0, 1.0).astype(np.float32)

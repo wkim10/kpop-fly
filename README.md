@@ -81,6 +81,15 @@ changed, or someone skipped). A song AudD names that has no saved dance shows as
 "TWICE - Likey (K-pop): no saved dance", and the brain keeps dancing. `--max-requests` caps AudD
 requests per session (default 50).
 
+The window shows a **mic meter**: the raw input level (0.5 s average), a pink tick at the silence
+threshold and the gain being applied. Laptop mics often hear music across a room at -50 to -60
+dBFS, too quiet for the onset detector (it ignores anything under -55). So mic input gets
+automatic gain, up to +40 dB toward -20 dBFS. The gain only adapts while the input is above the
+silence threshold, and below it the input is gated to zero, so amplified room noise doesn't turn
+into beats. Anything under `--silence-db` (default -65 dBFS) counts as silence. If the meter shows
+your room's quiet level above the tick, raise it; if music sits below the tick, lower it.
+`--simulate FILE --attenuate 47` plays a file at about -55 dBFS to test a quiet mic.
+
 When AudD doesn't recognize a recording, or there's no token or no network, every saved song is
 searched end to end instead. AudD fingerprints the studio recording, so it misses TV stages with
 live vocals; the local search still finds them. A local match must score well and beat the next

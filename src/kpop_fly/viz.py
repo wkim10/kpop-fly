@@ -38,7 +38,7 @@ BODY, BODY_DARK, EYE, WING = (120, 88, 60), (70, 50, 36), (200, 40, 50), (200, 2
 class Display:
     def __init__(self, pipeline: Pipeline, source_name: str, headless: bool = False,
                  choreo: ChoreoTrack | None = None, song_time: Callable[[], float] | None = None,
-                 mode: str = "blend"):
+                 mode: str = "blend", meter=None):
         if headless:
             os.environ["SDL_VIDEODRIVER"] = "dummy"
         import pygame
@@ -56,6 +56,7 @@ class Display:
         self.choreo = choreo
         self.mode = mode                           # requested; without a dance the brain drives anyway
         self.status: str | None = None             # a line about what's being listened to (mic mode)
+        self.meter = meter                         # an InputConditioner: level, gain, silence threshold
         self.headless = headless
         self.song_time = song_time
         self.t = 0.0
@@ -134,6 +135,8 @@ class Display:
         s.blit(self.big.render("kpop-fly", True, INK), (24, 18))
         subtitle = f"dancing {self.choreo.title}" if self.choreo else "brain -> beat"
         s.blit(self.font.render(subtitle, True, DIM), (26, 46))
+        if self.meter is not None:
+            self._mic_meter(26, 120)
         if self.status:
             text = self.status
             while self.font.size(text)[0] > STAGE_W - 40 and len(text) > 4:
@@ -157,6 +160,19 @@ class Display:
                                 True, INK), (26, H - 40))
         if self.choreo and self.t is not None:
             self._reference(self.choreo.human_at(self.t), self.choreo.dancers_at(self.t))
+
+    def _mic_meter(self, x: int, y: int, w: int = 220, lo: float = -90.0) -> None:
+        """Raw mic level from `lo` to 0 dBFS, a tick at the silence threshold, and the gain applied."""
+        pg, s, m = self.pg, self.screen, self.meter
+        frac = lambda db: min(1.0, max(0.0, (db - lo) / -lo))
+        s.blit(self.font.render("mic", True, DIM), (x, y))
+        bx = x + 34
+        pg.draw.rect(s, PANEL, (bx, y + 2, w, 12))
+        pg.draw.rect(s, GOLD if m.loud else DIM, (bx, y + 2, int(w * frac(m.level_db)), 12))
+        tick = bx + int(w * frac(m.silence_db))
+        pg.draw.line(s, PINK, (tick, y - 1), (tick, y + 16), 2)
+        label = f"{m.level_db:5.0f} dBFS   gain +{m.gain_db:.0f} dB" + ("" if m.loud else "   (quiet)")
+        s.blit(self.font.render(label, True, INK if m.loud else DIM), (bx + w + 10, y))
 
     def _shown_mode(self) -> str:
         """The mode actually moving the fly: outside a dance only the brain does."""

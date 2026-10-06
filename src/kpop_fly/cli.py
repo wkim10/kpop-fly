@@ -76,7 +76,7 @@ def cmd_live(args) -> None:
     from .audio import MicSource, PlaybackSource
     from .engine import BrainThread, Pipeline
 
-    track, song_time, name, live = None, None, None, None
+    track, song_time, name, live, conditioner = None, None, None, None, None
     if args.cmd == "mic":
         from .choreo import CHOREO_DIR
         from .listen import LiveDance, load_tracks
@@ -88,7 +88,10 @@ def cmd_live(args) -> None:
             source = MicSource(args.device)
         if not token():
             print(f"{TOKEN_ENV} isn't set: only the saved songs can be recognized (by matching them locally).")
-        live = LiveDance(source.sr, load_tracks(CHOREO_DIR), token(), max_requests=args.max_requests)
+        from .audio import InputConditioner
+        conditioner = InputConditioner(source.sr, silence_db=args.silence_db)
+        live = LiveDance(source.sr, load_tracks(CHOREO_DIR), token(), max_requests=args.max_requests,
+                         silence_db=args.silence_db, level_db=lambda: conditioner.level_db)
         song_time, name = live.song_time, source.name
     elif args.cmd == "url":
         audio, info, match, track = _url_match(args)
@@ -116,11 +119,14 @@ def cmd_live(args) -> None:
     if not args.no_window:
         from .viz import Display
         display = Display(pipe, name or (track.title if track else source.name), headless=args.headless,
-                          choreo=track, song_time=song_time, mode=args.mode)
+                          choreo=track, song_time=song_time, mode=args.mode, meter=conditioner)
     if live:
-        def feed(block, live=live):
-            pipe.feed(block)
-            live.feed(block)
+        quieter = 10 ** (-(args.attenuate or 0.0) / 20)        # --simulate --attenuate: act like a quiet mic
+
+        def feed(block, live=live, conditioner=conditioner):
+            gained = conditioner(block * quieter)
+            pipe.feed(gained)
+            live.feed(gained)
         source.start(feed, mute=args.mute)
     else:
         source.start(pipe.feed, mute=args.mute)
@@ -150,7 +156,8 @@ def cmd_live(args) -> None:
                         f"level {f.level('all') if f else 0:.2f}")
                 if live:
                     st = live.song_time()
-                    line += f"  | song {'--' if st is None else f'{st:6.2f}s'}  {live.state}"
+                    line += (f"  | mic {conditioner.level_db:5.1f} dBFS, gain +{conditioner.gain_db:4.1f} dB"
+                             f"  | song {'--' if st is None else f'{st:6.2f}s'}  {live.state}")
                 print(line)
     except KeyboardInterrupt:
         pass
@@ -301,9 +308,12 @@ def main(argv: list[str] | None = None) -> None:
     sp = sub.add_parser("mic", help="dance to the microphone, recognizing songs with AudD")
     sp.add_argument("--device", help="input device index or name (see `kpop-fly devices`)")
     sp.add_argument("--max-requests", type=int, default=50, help="most AudD requests this session (default 50)")
+    sp.add_argument("--silence-db", type=float, default=-65.0,
+                    help="input quieter than this (dBFS) counts as silence (default -65; see the meter in the window)")
     sp.add_argument("--simulate", metavar="FILE", help="feed this audio file in as if it were the mic (for testing)")
     sp.add_argument("--start", type=float, help="with --simulate: start this many seconds into the file")
     sp.add_argument("--mute", action="store_true", help="with --simulate: don't play the file aloud")
+    sp.add_argument("--attenuate", type=float, metavar="DB", help="with --simulate: make it this many dB quieter")
     live_opts(sp)
     sp = sub.add_parser("dance", help="dance an extracted song's choreography, with its audio")
     sp.add_argument("song", help="a slug in choreo/ (e.g. fancy) or a path to its .npz")

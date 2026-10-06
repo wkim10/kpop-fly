@@ -47,7 +47,7 @@ CLIP_S = 10.0             # what AudD hears, and the onset alignment window
 LONG_S = 18.0             # the most audio a whole-song search uses (repeats need context)
 LEAD_S = 2.0              # extra audio before a window so the onset detector is warmed up
 BUFFER_S = LONG_S + LEAD_S + 2.0
-SILENCE_DB = -50.0        # quieter than this (dBFS, averaged over LOUDNESS_S) is silence
+SILENCE_DB = -65.0        # quieter than this (dBFS, averaged over LOUDNESS_S) is silence
 LOUDNESS_S = 0.5
 LOCK_SPAN_S = 20.0        # search +-this around AudD's timecode
 RESYNC_SPAN_S = 3.0       # ...and +-this around the predicted position afterwards
@@ -118,7 +118,8 @@ class LiveDance:
     def __init__(self, sr: int, tracks: dict[str, ChoreoTrack], api_token: str | None, max_requests: int = 50,
                  recognizer: Callable[[np.ndarray, int, str], Recognition | None] = recognize,
                  clock: Callable[[], float] = time.perf_counter, log: Callable[[str], None] = print,
-                 threaded: bool = True):
+                 threaded: bool = True, silence_db: float = SILENCE_DB,
+                 level_db: Callable[[], float] | None = None):
         self.sr = sr
         self.tracks = tracks
         self.songs = {slug: t.choreo.meta for slug, t in tracks.items()}
@@ -128,6 +129,8 @@ class LiveDance:
         self.clock = clock
         self.log = log
         self.threaded = threaded                 # False: checks run inside feed() (deterministic, for tests)
+        self.silence_db = silence_db
+        self.level_db = level_db                 # the raw input level, if the audio we're fed has been gained
         self.ring = Ring(int(BUFFER_S * sr))
         self.samples = 0                         # mic samples received: the mic clock
         self._stamp = (0, clock())               # (samples, wall time) at the last block
@@ -156,7 +159,8 @@ class LiveDance:
         dur = len(mono) / self.sr
         a = min(1.0, dur / LOUDNESS_S)
         self._energy += a * (float(np.mean(mono ** 2)) - self._energy)
-        loud = 10 * np.log10(self._energy + 1e-12) > SILENCE_DB
+        level = self.level_db() if self.level_db else 10 * np.log10(self._energy + 1e-12)
+        loud = level > self.silence_db
         self.loud_s, self.quiet_s = (self.loud_s + dur, 0.0) if loud else (0.0, self.quiet_s + dur)
         if not self._busy and self.mic_time() >= self.next_check:
             self._busy = True
