@@ -164,6 +164,7 @@ class InputConditioner:
         self._fast = 0.0                     # mean square over LEVEL_S
         self._slow = 0.0                     # mean square over ADAPT_S, only while loud
         self._gate = 0.0
+        self.hold = False                    # True: keep the current gain (the listener says the song stopped)
 
     @property
     def loud(self) -> bool:
@@ -175,7 +176,7 @@ class InputConditioner:
         energy = float(np.mean(block ** 2)) if len(block) else 0.0
         self._fast += min(1.0, dur / self.LEVEL_S) * (energy - self._fast)
         self.level_db = 10 * np.log10(self._fast + 1e-12)
-        if self.loud and 10 * np.log10(energy + 1e-12) > self.silence_db:   # not while the meter is still falling
+        if self.loud and not self.hold and 10 * np.log10(energy + 1e-12) > self.silence_db:   # not while falling
             self._slow = energy if self._slow == 0.0 else self._slow + min(1.0, dur / self.ADAPT_S) * (energy - self._slow)
             self.gain_db = float(np.clip(self.TARGET_DB - 10 * np.log10(self._slow + 1e-12), 0.0, self.MAX_GAIN_DB))
         target = 1.0 if self.loud else 0.0

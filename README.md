@@ -54,7 +54,7 @@ uv run kpop-fly file choreo/tt.opus --choreo tt   # the same as `dance tt`, spel
 ```
 
 `dance` finds the song's audio through the file name recorded in the choreography, so the two
-always match. The fly's arms, legs, torso and head copy the consensus dancer (shown small in the
+always match. The fly's arms, legs, torso and head copy the song's dancer (shown small in the
 corner): upper-arm/forearm and thigh/shin directions carry over as-is, so elbows and knees bend
 exactly as the dancer's do; torso tilt leans the upper body; the nose and ear line nod, shift and
 roll the head. Everything stays in screen space, so the fly does what you'd see in the video.
@@ -68,27 +68,33 @@ uv run kpop-fly mic                  # play a song anywhere near the mic
 uv run kpop-fly mic --simulate choreo/tt.opus --start 60   # test without a mic: a file stands in for it
 ```
 
-The fly dances to the brain alone while `mic` listens. Once it has heard 10 s of sound, it sends
-that clip to [AudD](https://audd.io) on a background thread. If AudD names one of the saved
-songs, the clip is located in it, near AudD's timecode, and the fly switches to the dance.
-Locating takes two stages: chroma (which notes are sounding) finds the bar, then the onset
-envelope finds the exact 20 ms frame. Rhythm alone, through a speaker and a room, fits one beat or
-one bar off about half the time; harmony doesn't.
+The fly dances to the brain alone while `mic` listens. Once it has heard 6 s of sound
+(`--listen-seconds`, 5 also tested fine), it sends that clip to [AudD](https://audd.io) on a
+background thread. If AudD names one of the saved songs, the clip is located in it and the fly
+switches to the dance, about 7 s after the music starts. AudD's timecode lands 1.6-2.9 s before
+the *end* of the clip it was sent, whatever the clip's length, so the search covers just +-2.5 s
+around that. That's narrow enough that 4-7 s clips can't land on a repeated phrase (60/60 correct
+at each length through simulated room audio). Locating takes two stages: chroma (which notes are
+sounding) finds the bar, then the onset envelope finds the exact 20 ms frame. Rhythm alone,
+through a speaker and a room, fits one beat or one bar off about half the time; harmony doesn't.
 
-After that it stays in sync for free: every 6 s the latest audio is re-located around where the
-song should be by now. AudD is only asked again when that fails three times running (the song
-changed, or someone skipped). A song AudD names that has no saved dance shows as, for example,
-"TWICE - Likey (K-pop): no saved dance", and the brain keeps dancing. `--max-requests` caps AudD
-requests per session (default 50).
+While the fly dances, about once a second it checks that the last 3 s still match the song where
+it should be by now. Through a room the song scores 0.89+, room noise and other songs at most 0.31.
+If that fails for ~2 s:
 
-The window shows a **mic meter**: the raw input level (0.5 s average), a pink tick at the silence
-threshold and the gain being applied. Laptop mics often hear music across a room at -50 to -60
-dBFS, too quiet for the onset detector (it ignores anything under -55). So mic input gets
-automatic gain, up to +40 dB toward -20 dBFS. The gain only adapts while the input is above the
-silence threshold, and below it the input is gated to zero, so amplified room noise doesn't turn
-into beats. Anything under `--silence-db` (default -65 dBFS) counts as silence. If the meter shows
-your room's quiet level above the tick, raise it; if music sits below the tick, lower it.
-`--simulate FILE --attenuate 47` plays a file at about -55 dBFS to test a quiet mic.
+- **and the level dropped** (or went under the silence line): the song **stopped**. The fly goes
+  back to the brain alone, about 3-4 s after the music stops, and the brain hears silence rather
+  than amplified room noise. This works even when the room's noise sits above the silence line,
+  which a loudness threshold alone can't handle. When sound returns, the same song is looked for
+  first, so a resumed pause re-locks in ~4 s without asking AudD.
+- **and it's still loud:** the same song is searched end to end first (a skip, or a lock on the
+  wrong repeat of a chorus: AudD's own timecode sometimes names the other repeat). If it isn't
+  there, the song **changed**, and it's recognized again from audio after the change.
+
+Every 6 s a longer window also re-locates the song to keep the position exact. None of this costs
+API requests. A song AudD names that has no saved dance shows as, for example, "TWICE - Likey
+(K-pop): no saved dance", and the brain keeps dancing. `--max-requests` caps AudD requests per
+session (default 50).
 
 When AudD doesn't recognize a recording, or there's no token or no network, every saved song is
 searched end to end instead. AudD fingerprints the studio recording, so it misses TV stages with
@@ -150,15 +156,30 @@ speed just after the top 10% of onsets is 1.08–1.22× its speed elsewhere, aga
 the dance alone. It stays about 16 px (mean, per joint) from the dance, so the choreography is
 still recognizable, and it's somewhat jerkier (0.83 vs 0.73 acceleration per unit speed on FANCY).
 
-`extract` downloads the dance practice video, finds every dancer in each frame (YOLOX-tiny +
-RTMPose-m via rtmlib, pose model on CoreML), normalizes each dancer to their own body, and takes
-the per-keypoint median across them: one consensus dancer, with mirror reflections and
-off-count dancers outvoted. It writes `choreo/<slug>.npz` (consensus + every raw dancer + the
-audio's onset envelope for syncing) and `choreo/<slug>.opus` (the song), then deletes the video.
-`--preview` also writes `choreo/<slug>.preview.mp4`: the footage with detected skeletons next to
-the consensus dancer, to check the result. `choreo/` is git-ignored because it's derived from
-third-party videos. MediaPipe was the original plan, but it finds only 0–2 of 9 small dancers per
-frame, and 1.0.x aborts on macOS ([#6356](https://github.com/google-ai-edge/mediapipe/issues/6356)).
+`extract` downloads a dance video, finds every dancer in each frame (YOLOX-tiny + RTMPose-m via
+rtmlib, pose model on CoreML) and normalizes each to their own body. With several dancers it takes
+the per-keypoint median, one consensus dancer; with one, it's that dancer. It writes
+`choreo/<slug>.npz` (poses + the song's onset envelope for syncing) and `choreo/<slug>.opus` (the
+song), then deletes the video. `--preview` also writes `choreo/<slug>.preview.mp4`: the footage
+with detected skeletons next to the extracted dancer. `choreo/` is git-ignored because it's derived
+from third-party videos. MediaPipe was the original plan, but it finds only 0–2 of 9 small dancers
+per frame, and 1.0.x aborts on macOS ([#6356](https://github.com/google-ai-edge/mediapipe/issues/6356)).
+
+**Solo dancers on the studio track.** Each song in `songs.toml` now comes from one dancer: Momo's
+official FANCY dance video, and Lisa Rhee's covers of TT and CHEER UP. Each also names a `studio`
+track, the official audio from YouTube Music. `extract` aligns the video's soundtrack to it (to
+20 ms) and moves every pose onto the studio timeline, so `choreo/<slug>.opus` is the exact
+recording Spotify plays. Compared with the 9-member group practices used before (kept in
+`choreo/group/`):
+
+- **Mic matching:** room-degraded studio audio aligns at 0.95–0.96 (median) instead of 0.75–0.84.
+  The CHEER UP practice video's soundtrack was a smeared copy of the song.
+- **Choreography:** the solo poses carry less high-frequency jitter than the 9-dancer median
+  (above 8 Hz: 0.6–2.2% of motion vs 1.4–3.1%) and keep moves the median blurred or invented in
+  split formations. They agree with the group's limb directions at 0.80–0.85 as-is and 0.68–0.74
+  flipped, so none is mirrored.
+
+`mirrored = true` in `songs.toml` flips mirrored videos (tutorials) back before posing.
 
 Useful flags: `--hearing sound` drives only the sound-tuned JO-A/B neurons instead of all 672
 (far fewer DNs respond); `--gain` scales the antennal drive; `--mute` dances without playing
@@ -207,8 +228,8 @@ the fly also dances to). Live with the window open, a step takes about 4 ms of e
 ```
 src/kpop_fly/
   beat.py     onset detection and tempo
-  choreo.py   dance practice video → consensus choreography (choreo/<slug>.npz)
-  retarget.py consensus dancer → fly pose targets
+  choreo.py   dance video → choreography on the studio track's timeline (choreo/<slug>.npz)
+  retarget.py the dancer's poses → fly pose targets
   blend.py    dance-only / brain-only / blended modes
   render.py   offline mp4s of the fly dancing a song, and the mode comparison
   youtube.py  audio from a YouTube link (cached)
@@ -222,7 +243,7 @@ src/kpop_fly/
   fly.py      springs and 2D geometry (pure math, tested)
   viz.py      pygame window
   cli.py      commands
-songs.toml    songs and their dance practice videos
+songs.toml    songs: their dance videos, dancers and official studio tracks
 tests/        uv run pytest  (test_brain.py loads the real connectome; -m "not slow" skips it)
 ```
 

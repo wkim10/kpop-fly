@@ -188,6 +188,23 @@ def align(env: np.ndarray, ref: np.ndarray) -> list[Segment]:
     return segments
 
 
+def refine_offset(env: np.ndarray, ref: np.ndarray, seg: Segment, span_s: float = 0.2) -> float:
+    """A segment's offset to the onset frame (20 ms): correlate the whole segment against the song
+    at every offset within +-span_s of the 0.1 s hypothesis it was found at."""
+    e, r = smooth(env.astype(float)), smooth(ref.astype(float))
+    a, b = int(seg.start * ONSET_RATE), int(seg.end * ONSET_RATE)
+    base, best = int(round(seg.offset * ONSET_RATE)), (-2.0, seg.offset)
+    for d in range(-int(span_s * ONSET_RATE), int(span_s * ONSET_RATE) + 1):
+        lag = base + d                                     # song index = recording index + lag
+        lo, hi = max(a, -lag), min(b, len(r) - lag)
+        if hi - lo < 5 * ONSET_RATE:
+            continue
+        c = float(np.corrcoef(e[lo:hi], r[lo + lag:hi + lag])[0, 1])
+        if c > best[0]:
+            best = (c, lag / ONSET_RATE)
+    return best[1]
+
+
 def match(env: np.ndarray, choreos: dict[str, Choreo]) -> tuple[Match | None, list[Match]]:
     """The best acceptable match among the saved dances (or None), and every candidate for reporting."""
     duration = len(env) / ONSET_RATE

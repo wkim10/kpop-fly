@@ -1,4 +1,4 @@
-"""Choreography extraction: a dance practice video in, one consensus dancer out.
+"""Choreography extraction: a dance video in, one dancer's poses out (a consensus, if there are several).
 
   1. Download the video (720p, video only) and the audio track from YouTube.
   2. Find every dancer in every sampled frame (YOLOX-tiny person detector) and estimate their
@@ -9,6 +9,14 @@
      the median is the move; a mirror reflection or a dancer off-count gets outvoted.
   4. Save choreo/<slug>.npz (poses + the audio's onset envelope, for syncing later) and
      choreo/<slug>.opus (the song, for playback). The video itself is deleted.
+
+With a `studio` track in songs.toml (the official audio's YouTube id), the song saved is the
+studio track, not the video's soundtrack: the video's audio is aligned to it (match.align, then
+refined to 20 ms) and every pose is moved onto the studio timeline. Then the dance lines up with
+the exact recording Spotify and the radio play, which is what the mic hears. `mirrored = true`
+flips mirrored videos (dance tutorials) back before estimating poses.
+
+The same consensus code handles solo videos: a median of one dancer is that dancer.
 
 Coordinates in the consensus are the dancer's own: "left_wrist" is their left hand, which
 appears on screen right because they face the camera.
@@ -164,7 +172,8 @@ def download(youtube: str, workdir: Path, log: Callable[[str], None]) -> tuple[P
     from .youtube import download as ydl_download, normalize
     url = normalize(youtube)
     log(f"downloading video {url}")
-    info, video = ydl_download(url, "bv*[height<=720][vcodec^=avc1]/bv*[height<=720]", str(workdir / "video.%(ext)s"))
+    best = "[height<=1280][width<=1280]"                    # 720p, landscape or vertical
+    info, video = ydl_download(url, f"bv*{best}[vcodec^=avc1]/bv*{best}", str(workdir / "video.%(ext)s"))
     log("downloading audio")
     _, audio = ydl_download(url, "ba[acodec=opus]/ba", str(workdir / "audio.%(ext)s"))
     keep = ("id", "title", "channel", "upload_date", "duration", "webpage_url")
@@ -199,7 +208,7 @@ class PoseEstimator:
 
 
 def extract_poses(video: Path, target_fps: float, log: Callable[[str], None],
-                  preview: Callable | None = None, max_seconds: float | None = None) -> dict:
+                  preview: Callable | None = None, max_seconds: float | None = None, mirrored: bool = False) -> dict:
     import cv2
     cap = cv2.VideoCapture(str(video))
     fps, n = cap.get(cv2.CAP_PROP_FPS), int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -226,6 +235,8 @@ def extract_poses(video: Path, target_fps: float, log: Callable[[str], None],
         ok, frame = cap.read()
         if not ok:
             break
+        if mirrored:
+            frame = cv2.flip(frame, 1)
         kp, sc = estimator(frame)
         valid = dancer_mask(kp, sc, width, height)
         out["pose"][idx], out["visible"][idx], out["spread"][idx] = consensus(kp, sc, valid)
@@ -254,29 +265,65 @@ def extract(slug: str, youtube: str, song: dict | None = None, target_fps: float
             log: Callable[[str], None] = print) -> Path:
     _need("ffmpeg")
     import soundfile as sf
+    song = song or {}
     with tempfile.TemporaryDirectory(prefix="kpop-fly-") as tmp:
         video, audio, info = download(youtube, Path(tmp), log)
-        audio_out = out_dir / f"{slug}.opus"
-        save_audio(audio, audio_out)
-        samples, sr = sf.read(str(audio_out), dtype="float32", always_2d=True)
-        onset = onset_envelope(samples.mean(1), sr)
+        own_audio = Path(tmp) / "own.opus"                  # the video's soundtrack: in sync with its frames
+        save_audio(audio, own_audio)
+        samples, sr = sf.read(str(own_audio), dtype="float32", always_2d=True)
+        own_onset = onset_envelope(samples.mean(1), sr)
 
-        writer = PreviewWriter(out_dir / f"{slug}.preview.mp4", audio_out) if preview else None
+        audio_out = out_dir / f"{slug}.opus"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        segments = None
+        if song.get("studio"):
+            from .match import align, refine_offset
+            from .youtube import fetch_audio
+            studio_path, _ = fetch_audio(song["studio"], log)
+            studio, ssr = sf.read(str(studio_path), dtype="float32", always_2d=True)
+            onset = onset_envelope(studio.mean(1), ssr)
+            segments = align(own_onset, onset)
+            if not segments:
+                raise SystemExit(f"{youtube}'s audio doesn't match the studio track {song['studio']}; "
+                                 "is it the same version of the song?")
+            for seg in segments:
+                seg.offset = refine_offset(own_onset, onset, seg)
+            log("video -> studio track: " + "; ".join(f"{seg.start:.1f}-{seg.end:.1f} s at {seg.offset:+.2f} s"
+                                                      for seg in segments))
+            shutil.copyfile(studio_path, audio_out)
+            audio_seconds = len(studio) / ssr
+        else:
+            shutil.copyfile(own_audio, audio_out)
+            onset, audio_seconds = own_onset, len(samples) / sr
+
+        writer = PreviewWriter(out_dir / f"{slug}.preview.mp4", own_audio) if preview else None
         try:
-            poses = extract_poses(video, target_fps, log, writer.frame if writer else None, max_seconds)
+            poses = extract_poses(video, target_fps, log, writer.frame if writer else None, max_seconds,
+                                  mirrored=bool(song.get("mirrored")))
         finally:
             if writer:
                 writer.close()
         # the temporary directory, and the video in it, are deleted here
 
-    meta = {"format": FORMAT_VERSION, "slug": slug, **(song or {}), "source": info,
+    t = poses["t"].astype(float)
+    keep = np.ones(len(t), bool)
+    if segments:                                             # video time -> studio time; drop what isn't the song
+        mapped = np.full(len(t), np.nan)
+        for seg in segments:
+            inside = (t >= seg.start) & (t < seg.end)
+            mapped[inside] = t[inside] + seg.offset
+        keep = np.isfinite(mapped) & (mapped >= 0) & (mapped <= audio_seconds)
+        t = mapped
+    meta = {"format": FORMAT_VERSION, "slug": slug, **song, "source": info,
             "keypoints": list(KEYPOINTS), "detector": DETECTOR.rsplit("/", 1)[1], "pose_model": POSE.rsplit("/", 1)[1],
-            "sample_fps": len(poses["t"]) / (poses["t"][-1] - poses["t"][0]) if len(poses["t"]) > 1 else target_fps,
+            "sample_fps": int(keep.sum()) / (t[keep][-1] - t[keep][0]) if keep.sum() > 1 else target_fps,
             "video_fps": poses["video_fps"], "frame_size": [poses["width"], poses["height"]],
-            "onset_rate": ONSET_RATE, "audio": audio_out.name, "audio_seconds": len(samples) / sr,
+            "onset_rate": ONSET_RATE, "audio": audio_out.name, "audio_seconds": audio_seconds,
+            "timeline": "studio" if segments else "video",
+            "video_to_studio": [[seg.start, seg.end, seg.offset] for seg in segments] if segments else None,
             "extracted": time.strftime("%Y-%m-%d"), "extract_seconds": round(poses["seconds"], 1)}
-    choreo = Choreo(t=poses["t"].astype(np.float32), pose=poses["pose"], visible=poses["visible"],
-                    spread=poses["spread"], n_dancers=poses["n_dancers"], people=poses["people"],
+    choreo = Choreo(t=t[keep].astype(np.float32), pose=poses["pose"][keep], visible=poses["visible"][keep],
+                    spread=poses["spread"][keep], n_dancers=poses["n_dancers"][keep], people=poses["people"][keep],
                     onset=onset.astype(np.float16), meta=meta)
     path = out_dir / f"{slug}.npz"
     choreo.save(path)
@@ -317,15 +364,19 @@ class PreviewWriter:
                  "-s", f"{2 * self.W}x{self.H}", "-r", f"{self._fps:.4f}", "-i", "-", "-c:v", "libx264",
                  "-preset", "veryfast", "-crf", "28", "-pix_fmt", "yuv420p", str(self._raw)],
                 stdin=subprocess.PIPE)
-        sx, sy = self.W / frame.shape[1], self.H / frame.shape[0]
-        left = cv2.resize(frame, (self.W, self.H))
+        k = min(self.W / frame.shape[1], self.H / frame.shape[0])          # letterbox: keep the aspect
+        fw, fh = int(frame.shape[1] * k), int(frame.shape[0] * k)
+        ox, oy = (self.W - fw) // 2, (self.H - fh) // 2
+        left = np.zeros((self.H, self.W, 3), np.uint8)
+        left[oy:oy + fh, ox:ox + fw] = cv2.resize(frame, (fw, fh))
+        sx = sy = k
         for p in range(len(kp)):
             color = (90, 220, 255) if valid[p] else (150, 150, 150)
             for a, b in BONES:
                 a, b = KP[a], KP[b]
                 if sc[p, a] >= 0.3 and sc[p, b] >= 0.3:
-                    cv2.line(left, (int(kp[p, a, 0] * sx), int(kp[p, a, 1] * sy)),
-                             (int(kp[p, b, 0] * sx), int(kp[p, b, 1] * sy)), color, 2)
+                    cv2.line(left, (ox + int(kp[p, a, 0] * sx), oy + int(kp[p, a, 1] * sy)),
+                             (ox + int(kp[p, b, 0] * sx), oy + int(kp[p, b, 1] * sy)), color, 2)
         right = np.full((self.H, self.W, 3), (34, 22, 24), np.uint8)
         scale, cx, cy = 62, self.W // 2, int(self.H * 0.55)
         for a, b in BONES:
@@ -337,7 +388,8 @@ class PreviewWriter:
         if np.isfinite(pose[KP["nose"]]).all():
             n = pose[KP["nose"]]
             cv2.circle(right, (int(cx + n[0] * scale), int(cy - n[1] * scale)), 14, (235, 235, 235), 3)
-        cv2.putText(right, f"consensus of {int(valid.sum())} dancers   t={out['t'][idx]:.1f}s", (12, 24),
+        who = "1 dancer" if valid.sum() == 1 else f"consensus of {int(valid.sum())} dancers"
+        cv2.putText(right, f"{who}   t={out['t'][idx]:.1f}s", (12, 24),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1, cv2.LINE_AA)
         cv2.putText(right, "pink = dancer's left   cyan = dancer's right", (12, self.H - 14),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.45, (160, 160, 160), 1, cv2.LINE_AA)

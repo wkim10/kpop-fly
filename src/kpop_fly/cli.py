@@ -91,7 +91,8 @@ def cmd_live(args) -> None:
         from .audio import InputConditioner
         conditioner = InputConditioner(source.sr, silence_db=args.silence_db)
         live = LiveDance(source.sr, load_tracks(CHOREO_DIR), token(), max_requests=args.max_requests,
-                         silence_db=args.silence_db, level_db=lambda: conditioner.level_db)
+                         silence_db=args.silence_db, level_db=lambda: conditioner.level_db,
+                         listen_s=args.listen_seconds)
         song_time, name = live.song_time, source.name
     elif args.cmd == "url":
         audio, info, match, track = _url_match(args)
@@ -124,8 +125,9 @@ def cmd_live(args) -> None:
         quieter = 10 ** (-(args.attenuate or 0.0) / 20)        # --simulate --attenuate: act like a quiet mic
 
         def feed(block, live=live, conditioner=conditioner):
+            conditioner.hold = not live.input_open              # song stopped: don't adapt the gain to the room
             gained = conditioner(block * quieter)
-            pipe.feed(gained)
+            pipe.feed(gained if live.input_open else np.zeros_like(gained))   # ...and the brain hears silence
             live.feed(gained)
         source.start(feed, mute=args.mute)
     else:
@@ -308,6 +310,8 @@ def main(argv: list[str] | None = None) -> None:
     sp = sub.add_parser("mic", help="dance to the microphone, recognizing songs with AudD")
     sp.add_argument("--device", help="input device index or name (see `kpop-fly devices`)")
     sp.add_argument("--max-requests", type=int, default=50, help="most AudD requests this session (default 50)")
+    sp.add_argument("--listen-seconds", type=float, default=6.0,
+                    help="sound to hear before recognizing a song (default 6; 5 also tested fine)")
     sp.add_argument("--silence-db", type=float, default=-65.0,
                     help="input quieter than this (dBFS) counts as silence (default -65; see the meter in the window)")
     sp.add_argument("--simulate", metavar="FILE", help="feed this audio file in as if it were the mic (for testing)")

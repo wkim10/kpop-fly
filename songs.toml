@@ -1,20 +1,32 @@
 # Songs kpop-fly can dance. `kpop-fly extract <slug>` turns each video into choreo/<slug>.npz.
-# Videos should be fixed-camera, full-body dance practice takes: the extractor builds one
-# consensus dancer from everyone in frame, so unison group choreography works best.
+#
+#   youtube    the dance video poses are taken from: one dancer, full body, fixed camera, the whole
+#              choreography, dancing to the studio track
+#   studio     the official audio (YouTube Music / Topic, "Provided to YouTube by JYP Entertainment").
+#              The video's soundtrack is aligned to it and the poses moved onto its timeline, so the
+#              dance lines up with the recording the mic will hear
+#   mirrored   true for mirrored videos (dance tutorials): frames are flipped back before posing
+#
+# Until 2026-10-06 these came from the official 9-member group dance practices, as a per-frame
+# median of every dancer (now in choreo/group/): iRw4kL1CMI8, 9uypQGzzhns, 7T4wxA2BGTo.
 
 [fancy]
 artist = "TWICE"
 title = "FANCY"
-youtube = "iRw4kL1CMI8"          # TWICE "FANCY" Dance Practice Video (official TWICE channel, 2019)
+youtube = "VbytAZQogH0"          # TWICE(트와이스) MOMO "FANCY" Dance Video (official TWICE channel): Momo, solo
+studio = "j4OrZV_GAsI"
+dancer = "Momo"
 
 [tt]
 artist = "TWICE"
 title = "TT"
-youtube = "9uypQGzzhns"          # TWICE(트와이스) "TT" Dance Practice Video (official TWICE channel, 2016)
+youtube = "Sdy5ghAD0Mo"          # TWICE(트와이스) "TT(티티)" Lisa Rhee Dance Cover
+studio = "___h2czNhe0"
+dancer = "Lisa Rhee"
 
 [cheer-up]
 artist = "TWICE"
 title = "CHEER UP"
-youtube = "7T4wxA2BGTo"          # TWICE(트와이스) "CHEER UP" Dance Video (official TWICE channel, 2016).
-                                 # No official upload is titled "dance practice"; this one is a
-                                 # fixed-camera practice-room take with no cuts, which is what we need.
+youtube = "jksWKVkoock"          # [FULL Version] TWICE(트와이스) "CHEER UP" Lisa Rhee Dance Cover
+studio = "prWVZFgZ3Zc"
+dancer = "Lisa Rhee"

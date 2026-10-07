@@ -3,7 +3,7 @@
 The right panel shows the chain end to end: sound onsets -> voltage into the antennae -> a
 raster of the descending neurons that listen -> the channel levels that move the body.
 
-With a choreography, the fly's arms, legs, torso and head follow the song's consensus dancer
+With a choreography, the fly's arms, legs, torso and head follow the song's dancer
 (drawn small in the corner for reference), mixed with the brain according to the mode (see
 blend.py). Press m to cycle blend -> dance -> brain.
 """
@@ -174,6 +174,11 @@ class Display:
         label = f"{m.level_db:5.0f} dBFS   gain +{m.gain_db:.0f} dB" + ("" if m.loud else "   (quiet)")
         s.blit(self.font.render(label, True, INK if m.loud else DIM), (bx + w + 10, y))
 
+    def _source(self) -> str:
+        """Whose dance the fly is copying."""
+        dancer = self.choreo.choreo.meta.get("dancer") if self.choreo else None
+        return f"{dancer}'s dance" if dancer else "the dance practice's consensus dancer"
+
     def _shown_mode(self) -> str:
         """The mode actually moving the fly: outside a dance only the brain does."""
         return self.mode if self.choreo is not None and self.t is not None else "brain"
@@ -185,7 +190,7 @@ class Display:
             self.pg.draw.circle(self.screen, BODY_DARK, joint, width // 2 + 2)
 
     def _reference(self, human: np.ndarray, n_dancers: int) -> None:
-        """The consensus dancer the fly is copying, small, top right of the stage."""
+        """The dancer the fly is copying, small, top right of the stage."""
         pg, s = self.pg, self.screen
         cx, cy, k = STAGE_W - 80, 150, 34
         pt = lambda i: (cx + human[i, 0] * k, cy - human[i, 1] * k)
@@ -193,7 +198,9 @@ class Display:
             color = PINK if a.startswith("left") and b.startswith("left") else CYAN if a.startswith("right") and b.startswith("right") else DIM
             pg.draw.line(s, color, pt(KP[a]), pt(KP[b]), 2)
         pg.draw.circle(s, DIM, pt(KP["nose"]), 7, 2)
-        label = self.font.render(f"the moves ({n_dancers} dancers)", True, DIM)
+        dancer = self.choreo.choreo.meta.get("dancer") if self.choreo else None
+        who = dancer or (f"{n_dancers} dancer" if n_dancers == 1 else f"{n_dancers} dancers")
+        label = self.font.render(f"the moves ({who})", True, DIM)
         s.blit(label, (min(cx - label.get_width() // 2, STAGE_W - label.get_width() - 8), cy + 72))
 
     def _panel(self, snap, levels) -> None:
@@ -241,9 +248,9 @@ class Display:
             pg.draw.rect(s, colors[ch], (cx + 130, cy + 2, int(bw * levels[ch]), 12))
         y += 3 * 24 + 8
         foot = {
-            "blend": ("the moves: the dance practice's consensus dancer.",
+            "blend": (f"the moves: {self._source()}.",
                       "when they land, how hard: the brain's descending neurons."),
-            "dance": ("the moves: the dance practice's consensus dancer, alone.",
+            "dance": (f"the moves: {self._source()}, alone.",
                       "the brain is running but not driving the fly."),
             "brain": ("when each part moves: the brain's descending neurons.",
                       "how far it moves: an artistic mapping."),

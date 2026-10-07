@@ -5,7 +5,7 @@ import pytest
 import soundfile as sf
 
 from kpop_fly.choreo import Choreo, onset_envelope
-from kpop_fly.listen import LiveDance, Ring
+from kpop_fly.listen import LISTEN_S, STOP_AFTER_S, LiveDance, Ring
 from kpop_fly.recognize import AudDError, Recognition
 from kpop_fly.retarget import ChoreoTrack
 
@@ -14,17 +14,22 @@ NOTES = 220.0 * 2 ** (np.arange(24) / 12)
 
 
 def make_song(seconds: float, seed: int) -> np.ndarray:
-    """A chord per 2 s bar (3 random notes) and a kick on every beat at 120 BPM."""
+    """Like a pop song: its own key and tempo, a chord from that key per bar, a kick on every beat.
+    (Random chords from too small a palette repeat by chance, which real songs rarely do.)"""
     rng = np.random.default_rng(seed)
+    root = 220.0 * 2 ** (rng.integers(12) / 12)
+    scale = root * 2 ** (np.array([0, 2, 4, 5, 7, 9, 11, 12, 14, 16, 17, 19, 21, 23]) / 12)
+    beat = 60 / rng.uniform(95, 140)
     t = np.arange(int(seconds * SR)) / SR
     x = np.zeros_like(t)
-    for bar in range(int(seconds / 2)):
-        span = (t >= bar * 2) & (t < bar * 2 + 2)
-        for f in rng.choice(NOTES, 3, replace=False):
+    for bar in range(int(seconds / (4 * beat)) + 1):
+        span = (t >= bar * 4 * beat) & (t < (bar + 1) * 4 * beat)
+        degree = rng.integers(7)
+        for f in scale[[degree, degree + 2, degree + 4, rng.integers(14)]]:   # a triad plus a colour note
             x[span] += 0.15 * np.sin(2 * np.pi * f * t[span])
     kick_t = np.arange(int(0.1 * SR)) / SR
     kick = np.sin(2 * np.pi * (50 + 100 * np.exp(-kick_t * 30)) * kick_t) * np.exp(-kick_t * 25)
-    for b in np.arange(0, seconds, 0.5):
+    for b in np.arange(0, seconds, beat):
         i = int(b * SR)
         x[i:i + len(kick)] += 0.6 * kick[:len(x) - i]
     return (x / np.abs(x).max() * 0.5).astype(np.float32)
@@ -64,14 +69,16 @@ def test_audd_hint_then_exact_lock(library):
     tracks, audio = library
     calls = []
 
-    def audd(clip, sr, token):                 # AudD: right song, position 3 s off (its own recording)
+    def audd(clip, sr, token):                 # AudD's timecode: ~2.3 s before the clip's end, whole seconds
         calls.append(len(clip) / sr)
-        return Recognition("TEST", "ALPHA", timecode=40.0 + (live.samples / SR - 10.0) + 3.0)
+        return Recognition("TEST", "ALPHA", timecode=float(np.floor(40.0 + live.samples / SR - 2.3)))
 
     live = listener(tracks, audd)
-    play(live, audio["alpha"][40 * SR:], 25)    # the "mic" hears alpha from 0:40
+    play(live, audio["alpha"][40 * SR:], 7)     # the "mic" hears alpha from 0:40
+    assert calls == [LISTEN_S]                  # recognized from a LISTEN_S clip, not 10 s
     assert live.state == "synced" and live.track is tracks["alpha"]
-    assert calls == [10.0] and live.requests == 1                  # one 10 s clip, no further requests
+    play(live, audio["alpha"][47 * SR:], 18)
+    assert live.requests == 1                   # no further requests while it stays in sync
     assert live.song_time() == pytest.approx(40 + 25, abs=0.05)
 
 
@@ -92,7 +99,7 @@ def test_audd_errors_fall_back_too(library):
         raise AudDError("couldn't reach AudD: offline")
 
     live = listener(tracks, broken)
-    play(live, audio["alpha"][50 * SR:], 14)
+    play(live, audio["alpha"][50 * SR:], 7)
     assert live.state == "synced" and live.track is tracks["alpha"] and "offline" in live.detail
 
 
@@ -106,7 +113,7 @@ def test_no_token_never_calls_audd(library):
 def test_known_song_without_a_dance_is_brain_only(library):
     tracks, audio = library
     live = listener(tracks, lambda *a: Recognition("TWICE", "LIKEY", 30.0, ["K-Pop"]))
-    play(live, make_song(30, 9), 14)
+    play(live, make_song(30, 7), 14)
     assert live.state == "no dance" and live.track is None and live.song_time() is None
     assert "LIKEY (K-pop)" in live.status
 
@@ -114,7 +121,7 @@ def test_known_song_without_a_dance_is_brain_only(library):
 def test_unknown_audio_is_not_found(library):
     tracks, _ = library
     live = listener(tracks, lambda *a: None)
-    play(live, make_song(30, 9), 14)
+    play(live, make_song(30, 7), 14)
     assert live.state == "not found" and live.track is None
 
 
@@ -128,7 +135,7 @@ def test_silence_is_not_sent_to_audd(library):
 def test_request_cap(library):
     tracks, _ = library
     live = listener(tracks, lambda *a: None, max_requests=1)
-    play(live, make_song(120, 9), 100)                              # unrecognizable for 100 s
+    play(live, make_song(120, 7), 100)                              # unrecognizable for 100 s
     assert live.requests == 1 and "cap" in live.detail
 
 
@@ -150,3 +157,88 @@ def test_ring_buffer_wraps():
     assert r.last(5).tolist() == [3, 4, 5, 6, 7] and r.last(2).tolist() == [6, 7]
     r.write(np.arange(8, 20))
     assert r.last(5).tolist() == [15, 16, 17, 18, 19]
+
+
+def at_db(x: np.ndarray, db: float) -> np.ndarray:
+    return (x * 10 ** (db / 20) / np.sqrt(np.mean(x ** 2) + 1e-20)).astype(np.float32)
+
+
+def noise(seconds: float, db: float) -> np.ndarray:
+    return at_db(np.random.default_rng(0).normal(size=int(seconds * SR)), db)
+
+
+def time_to(live: LiveDance, x: np.ndarray, condition, block: int = 1024) -> float | None:
+    """Feed x until condition(live) holds; seconds it took (None: never)."""
+    for i in range(0, len(x), block):
+        live.feed(x[i:i + block])
+        if condition(live):
+            return (i + block) / SR
+    return None
+
+
+@pytest.mark.parametrize("room_db", [-120, -72, -62])
+def test_the_fly_stops_dancing_when_the_song_stops(library, room_db):
+    """-62: room noise above the -65 silence line, only 7 dB under the song. The level alone can't tell."""
+    tracks, audio = library
+    live = listener(tracks, lambda *a: pytest.fail("AudD asked"), token=None)
+    play(live, at_db(audio["alpha"][30 * SR:55 * SR], -55), 25)
+    assert live.state == "synced"
+    took = time_to(live, noise(15, room_db), lambda lv: lv.song_time() is None)
+    assert took is not None and took <= 4.0                     # "more than a few seconds" of quiet
+    assert live.state == "stopped" and live.track is None and not live.input_open
+    play(live, noise(10, room_db), 10)
+    assert live.state == "stopped"                              # stays stopped through the quiet
+
+
+def test_a_paused_song_resumes_without_asking_audd(library):
+    tracks, audio = library
+    calls = []
+    live = listener(tracks, lambda *a: calls.append(1) or Recognition("TEST", "ALPHA",
+                    timecode=float(np.floor(30.0 + live.samples / SR - 2.3))))
+    x = audio["alpha"]
+    play(live, x[30 * SR:50 * SR], 20)                          # 0:30-0:50, then paused for 8 s
+    assert calls == [1] and live.state == "synced"
+    play(live, noise(8, -72), 8)
+    assert live.state == "stopped"
+    took = time_to(live, x[50 * SR:80 * SR], lambda lv: lv.state == "synced")   # resumed where it paused
+    assert took is not None and took <= 6.0
+    assert calls == [1] and "resumed" in live.detail
+    assert live.song_time() == pytest.approx(50 + took, abs=0.05)
+
+
+def test_a_different_song_is_recognized_from_after_the_change(library):
+    tracks, audio = library
+    clips = []
+
+    def audd(clip, sr, token):
+        clips.append(clip.copy())
+        return None                                             # make it use the local search
+
+    live = listener(tracks, audd)
+    play(live, audio["alpha"][20 * SR:45 * SR], 25)
+    assert live.track is tracks["alpha"]
+    took = time_to(live, audio["beta"][60 * SR:100 * SR], lambda lv: lv.track is tracks["beta"])
+    assert took is not None and took <= STOP_AFTER_S + LISTEN_S + 2.0
+    assert live.input_open                                      # it never stopped: music kept playing
+    assert live.song_time() == pytest.approx(60 + took, abs=0.05)
+
+
+def test_quiet_before_any_song_is_just_listening(library):
+    tracks, _ = library
+    live = listener(tracks, lambda *a: pytest.fail("AudD asked"))
+    play(live, noise(10, -80), 10)
+    assert live.state == "listening" and live.input_open
+
+
+def test_a_skip_within_the_song_is_followed_without_asking_audd(library):
+    tracks, audio = library
+    calls = []
+    live = listener(tracks, lambda *a: calls.append(1) or Recognition("TEST", "ALPHA",
+                    timecode=float(np.floor(20.0 + live.samples / SR - 2.3))))
+    x = audio["alpha"]
+    play(live, x[20 * SR:40 * SR], 20)
+    assert calls == [1] and live.state == "synced"
+    took = time_to(live, x[80 * SR:110 * SR], lambda lv: lv.state == "synced" and "again" in lv.detail)
+    assert took is not None and took <= 6.0
+    assert calls == [1] and live.input_open                    # no new request; never stopped
+    assert live.song_time() == pytest.approx(80 + took, abs=0.05)
