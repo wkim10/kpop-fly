@@ -8,6 +8,11 @@ bar, the onset envelope then finds the exact frame (see listen.py).
 Through simulated laptop-speaker-to-room-to-mic audio (band-limited, echo, noise), onsets alone
 put 27 of 55 clips at the wrong position; chroma first got all 55 right. Matching clips scored
 0.55-0.85, non-matching ones at most 0.22.
+
+A live clip's frames don't line up with the song's 100 ms frame grid, and up to 50 ms of
+misalignment costs real correlation when the harmony moves: through a noisy room the song's
+worst 0.5% of scores fell from 0.70 to 0.50, enough to make "still playing?" fail mid-song.
+`chroma_scan` therefore scores the clip at PHASES sub-frame offsets and keeps the best.
 """
 from __future__ import annotations
 
@@ -73,3 +78,22 @@ def song_chroma(audio: Path) -> np.ndarray:
     path.parent.mkdir(parents=True, exist_ok=True)
     np.save(path, c)
     return c
+
+
+PHASES = 4                         # sub-frame offsets chroma_scan tries: 25 ms apart
+
+
+def chroma_scan(clip: np.ndarray, sr: int, ref: np.ndarray, phases: int = PHASES) -> np.ndarray:
+    """Like chroma_ncc(chroma(clip), ref), robust to where the clip's frames fall: index m is the
+    score for the clip starting m / (CHROMA_RATE * phases) s into the song."""
+    hop = sr / CHROMA_RATE
+    out = None
+    for k in range(phases):
+        cut = int(round(k * hop / phases))                         # drop k/phases of a frame from the start...
+        sc = chroma_ncc(chroma(clip[cut:], sr), ref)               # ...so frame j starts k/phases later
+        if out is None:
+            out = np.full(len(sc) * phases + phases, -1.0)
+        idx = np.arange(len(sc)) * phases - k                      # clip start = j/rate - k/(rate*phases)
+        ok = idx >= 0
+        out[idx[ok]] = np.maximum(out[idx[ok]], sc[ok])
+    return out if out is not None else np.zeros(0)

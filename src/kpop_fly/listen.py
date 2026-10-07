@@ -26,12 +26,14 @@ time in 10); usually the choreography repeats too.
 
 While a dance plays, every STILL_EVERY_S the last STILL_S of audio is checked against the song
 where it should be by now (room audio: the song scores 0.89+, noise and other songs <= 0.31).
-When that fails for STOP_AFTER_S:
+Its clip is scored at 4 sub-frame phases (features.chroma_scan): framing alone used to make the
+song dip under the threshold mid-song in a noisy room. When that fails for STOP_AFTER_S:
   - and the level has dropped too (or gone under the silence line): the song STOPPED. A pause
     or the end of the song; room noise can still sit above the silence line, which is why
     the check doesn't rely on the level alone. When sound returns, the same song is looked for
     first (a resumed pause, any position) without asking AudD.
-  - and it's still loud: first the same song is searched end to end (a skip within it, or a lock
+  - and it's still loud, for CHANGE_AFTER_S (the fly keeps dancing meanwhile): first the same
+    song is searched end to end, with the post-jump audio and then a full CLIP_S, (a skip within it, or a lock
     on the wrong repeat of a chorus whose repeats have now diverged: AudD's own timecode can point
     at either repeat). Only if it isn't there has the song CHANGED: recognize again, from audio
     after the change.
@@ -47,7 +49,7 @@ from typing import Callable
 import numpy as np
 
 from .choreo import ONSET_RATE, Choreo, onset_envelope
-from .features import CHROMA_RATE, chroma, chroma_ncc, song_chroma
+from .features import CHROMA_RATE, PHASES, chroma_scan, song_chroma
 from .match import sliding_ncc, smooth
 from .recognize import TOKEN_ENV, AudDError, Recognition, recognize, saved_dance
 from .retarget import ChoreoTrack
@@ -70,10 +72,13 @@ LOCAL_MARGIN = 0.15       # others <= 0.27), when it also beats the next saved s
 LOCAL_SCORE_ALONE = 0.45  # with only one saved song there's no runner-up to beat: be stricter
 STILL_S = 3.0             # "still playing?": this much recent audio...
 STILL_EVERY_S = 1.0       # ...checked this often...
-STILL_SCORE = 0.60        # ...must score this at the predicted position (song 0.89+, anything else <= 0.31)
+STILL_SCORE = 0.45        # ...must score this at the predicted position (noisy room: the song 0.70+,
+                          # other songs <= 0.27, room noise <= 0.16)
+STILL_DROPPED = 0.55      # ...or this, once the level has dropped too (a drop is evidence of a stop already)
 STILL_SPAN_S = 0.3
 REFIND_SCORE = 0.60       # a whole-song search for the same song after a jump (room audio: it 0.87+, others <= 0.34)
-STOP_AFTER_S = 2.0        # failing for this long (on top of the window still holding the song): stopped or changed
+STOP_AFTER_S = 2.0        # failing this long, with the level down: the song stopped
+CHANGE_AFTER_S = 4.0      # failing this long while still loud: maybe it changed (meanwhile keep dancing)
 DROP_DB = 5.0             # stopped (not changed) if the level fell this far below the song's
 BACK_DB = 4.0             # in "stopped", sound is back when the level rises this far above the quiet
 RESYNC_S = 6.0
@@ -120,7 +125,7 @@ def locate(audio: np.ndarray, sr: int, onset_ref: np.ndarray, chroma_ref: np.nda
     """The song time at the END of `audio`, searched for within +-span of `around`, and the chroma
     score. Chroma uses the last `window_s` of the audio, the onset refinement the last CLIP_S;
     `audio` should hold LEAD_S more than the longer of the two."""
-    start, score = _peak(chroma_ncc(chroma(audio[-int(window_s * sr):], sr), chroma_ref), CHROMA_RATE,
+    start, score = _peak(chroma_scan(audio[-int(window_s * sr):], sr, chroma_ref), CHROMA_RATE * PHASES,
                          around - window_s, span)
     if start is None:
         return None, 0.0
@@ -362,19 +367,20 @@ class LiveDance:
 
         audio, end = self._audio(STILL_S)                                    # still playing?
         expect = end + offset - STILL_S
-        sc = chroma_ncc(chroma(audio[-int(STILL_S * self.sr):], self.sr), self._chroma_of(slug))
-        _, still = _peak(sc, CHROMA_RATE, expect, STILL_SPAN_S)
-        if still >= STILL_SCORE and self.quiet_s < STOP_AFTER_S:
+        sc = chroma_scan(audio[-int(STILL_S * self.sr):], self.sr, self._chroma_of(slug))
+        _, still = _peak(sc, CHROMA_RATE * PHASES, expect, STILL_SPAN_S)
+        dropped = self.quiet_s >= STOP_AFTER_S or (self.song_db is not None and self.level < self.song_db - DROP_DB)
+        if still >= (STILL_DROPPED if dropped else STILL_SCORE) and self.quiet_s < STOP_AFTER_S:
             self.failing_since = None
             self.song_db = self.level if self.song_db is None else self.song_db + 0.1 * (self.level - self.song_db)
             self._again(STILL_EVERY_S)
             return
         if self.failing_since is None:
             self.failing_since = now
-        if now - self.failing_since < STOP_AFTER_S and self.quiet_s < STOP_AFTER_S:
-            self._again(STILL_EVERY_S)
+        failing = now - self.failing_since
+        if failing < STOP_AFTER_S:
+            self._again(STILL_EVERY_S)                                          # keep dancing meanwhile
             return
-        dropped = self.quiet_s >= STOP_AFTER_S or (self.song_db is not None and self.level < self.song_db - DROP_DB)
         if dropped:
             self.quiet_db = self.level
             with self._lock:                                                  # keep slug/offset to resume
@@ -384,12 +390,18 @@ class LiveDance:
         else:
             # still loud: did it jump within the same song (a skip, or it was on the other chorus all
             # along and the repeats just diverged)? Look there first; it costs no request
-            window = min(CLIP_S, max(STILL_S, now - self.failing_since + 0.5))   # audio from after the jump
-            audio, end = self._audio(window)
-            at, score = self._whole_song(slug, audio, window)
+            for window in (min(CLIP_S, max(STILL_S, now - self.failing_since + 0.5)),    # after a jump
+                           min(CLIP_S, self._sound_s(now))):                        # or a lot of it
+                audio, end = self._audio(window)
+                at, score = self._whole_song(slug, audio, window)
+                if at is not None and score >= REFIND_SCORE:
+                    break
             if at is not None and score >= REFIND_SCORE:
                 self._lock_on(slug, at, end, f"{self._name()}: found its place again at {_clock(at)} "
                                              f"(alignment {score:.2f})")
+                return
+            if failing < CHANGE_AFTER_S:                                        # a dip? keep dancing, look again
+                self._again(STILL_EVERY_S)
                 return
             self.fresh_from = self.failing_since                            # recognize from after the change
             self.recognition = None
@@ -427,8 +439,8 @@ class LiveDance:
         window = min(CLIP_S, heard)
         audio, end = self._audio(window)
         at, score = self._locate(slug, audio, end + self.offset, RESYNC_SPAN_S, window)   # carried on playing
-        threshold = STILL_SCORE                                             # (a quiet passage, not a pause)
-        if at is None or score < STILL_SCORE:
+        threshold = REFIND_SCORE                       # a quiet passage, not a pause: after a real pause this
+        if at is None or score < REFIND_SCORE:         # spot is off by the pause, so only a strong match counts
             at, score = self._whole_song(slug, audio, window)                 # paused and resumed
             threshold = REFIND_SCORE
         if at is not None and score >= threshold:

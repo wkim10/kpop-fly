@@ -242,3 +242,20 @@ def test_a_skip_within_the_song_is_followed_without_asking_audd(library):
     assert took is not None and took <= 6.0
     assert calls == [1] and live.input_open                    # no new request; never stopped
     assert live.song_time() == pytest.approx(80 + took, abs=0.05)
+
+
+def test_a_loud_dip_mid_song_does_not_stop_the_dance(library):
+    """Someone talks over the music, a door bangs: 2.5 s of loud non-music. The fly keeps dancing."""
+    tracks, audio = library
+    live = listener(tracks, lambda *a: None)
+    x = audio["alpha"]
+    play(live, x[20 * SR:45 * SR], 25)
+    assert live.state == "synced"
+    dip = noise(2.5, -10)                                       # as loud as the music, nothing like it
+    states = set()
+    for chunk in (dip, x[47 * SR + SR // 2:60 * SR]):           # the song carried on underneath
+        for i in range(0, len(chunk), 1024):
+            live.feed(chunk[i:i + 1024])
+            states.add(live.state)
+    assert states == {"synced"}                                 # never stopped, never "changed"
+    assert live.song_time() == pytest.approx(60, abs=0.05)

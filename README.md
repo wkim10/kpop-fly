@@ -79,17 +79,23 @@ sounding) finds the bar, then the onset envelope finds the exact 20 ms frame. Rh
 through a speaker and a room, fits one beat or one bar off about half the time; harmony doesn't.
 
 While the fly dances, about once a second it checks that the last 3 s still match the song where
-it should be by now. Through a room the song scores 0.89+, room noise and other songs at most 0.31.
-If that fails for ~2 s:
+it should be by now. A live clip's chroma frames never line up exactly with the song's 100 ms
+grid, and that alone used to make the score dip mid-song in a noisy room. So every chroma search
+now tries 4 sub-frame phases (25 ms apart) and keeps the best. Through a room with noise only
+3-7 dB under the music, the song then scores 0.61+ (worst 0.5% of checks), other songs at most
+0.27 and room noise 0.16. The check passes at 0.45, or 0.55 once the level has dropped too. If it
+fails:
 
 - **and the level dropped** (or went under the silence line): the song **stopped**. The fly goes
   back to the brain alone, about 3-4 s after the music stops, and the brain hears silence rather
   than amplified room noise. This works even when the room's noise sits above the silence line,
   which a loudness threshold alone can't handle. When sound returns, the same song is looked for
   first, so a resumed pause re-locks in ~4 s without asking AudD.
-- **and it's still loud:** the same song is searched end to end first (a skip, or a lock on the
-  wrong repeat of a chorus: AudD's own timecode sometimes names the other repeat). If it isn't
-  there, the song **changed**, and it's recognized again from audio after the change.
+- **and it's still loud:** the fly keeps dancing. After 2 s the same song is searched end to end,
+  which catches a skip, or a lock on the wrong repeat of a chorus (AudD's own timecode sometimes
+  names the other repeat, and FANCY opens and closes with the same hook). Only after 4 s with no
+  match has the song **changed**, and it's recognized again from audio after the change. A loud
+  interruption (talking, a door) shorter than that doesn't stop the dance.
 
 Every 6 s a longer window also re-locates the song to keep the position exact. None of this costs
 API requests. A song AudD names that has no saved dance shows as, for example, "TWICE - Likey

@@ -68,3 +68,20 @@ def test_threshold_is_adjustable():
 def _ends_loud(cond, x):
     run(cond, x)
     return cond.loud
+
+
+def test_chroma_scan_does_not_care_where_the_frames_fall():
+    from kpop_fly.features import CHROMA_RATE, PHASES, chroma, chroma_ncc, chroma_scan
+    rng = np.random.default_rng(0)
+    t = np.arange(40 * SR) / SR
+    notes = 220 * 2 ** (rng.integers(0, 24, (80, 3)) / 12)              # a chord every 0.5 s
+    x = sum(np.sin(2 * np.pi * notes[(t * 2).astype(int), k] * t) for k in range(3)).astype(np.float32)
+    ref = chroma(x, SR)
+    for start in (10.0, 10.05, 17.025, 22.075):                          # on and off the 100 ms grid
+        clip = x[int(start * SR):int((start + 3) * SR)]
+        scan = chroma_scan(clip, SR, ref)
+        m = int(scan.argmax())
+        assert m / (CHROMA_RATE * PHASES) == pytest.approx(start, abs=0.0125)
+        assert scan[m] > 0.9                                              # off the grid it used to drop
+    off_grid = x[int(10.05 * SR):int(13.05 * SR)]
+    assert chroma_ncc(chroma(off_grid, SR), ref).max() < chroma_scan(off_grid, SR, ref).max() - 0.05
